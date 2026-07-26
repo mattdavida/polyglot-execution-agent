@@ -270,5 +270,15 @@ The result is a realistic book with irregular depth (e.g. 29 contracts at one le
 
 ---
 
+---
+
+## Engineering Takeaways
+
+- **LLMs are most valuable when constrained.** Probabilistic reasoning is where LLMs excel — algorithm selection, qualitative judgment, natural language context. Deterministic computation belongs in native code. Mixing the two produces systems that are neither correct nor fast.
+- **Architectural boundaries are safer than prompt engineering.** The LLM in this system *cannot* compute slippage — not because it is told not to, but because the computation runs in a different language on a different runtime with no shared state. The constraint is structural.
+- **Human-in-the-loop should be an architectural checkpoint, not a UI afterthought.** LangGraph's `interrupt()` + `SqliteSaver` checkpointer makes the HITL pause a first-class graph primitive — the full execution state serializes to disk and resumes deterministically. No polling loops, no shared mutable state, no race conditions.
+
+---
+
 See [DEMO.md](DEMO.md) for a full walkthrough with screenshots.  
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design rationale, decision log, and phase definitions.
