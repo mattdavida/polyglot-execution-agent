@@ -1,6 +1,5 @@
 """
 Azure OpenAI LLM client factory.
-Pattern adapted directly from the Structured Notes Intelligence Engine.
 
 Returns a configured AzureChatOpenAI instance. Called once per node invocation
 so the client is always fresh — no stale connection state between graph runs.

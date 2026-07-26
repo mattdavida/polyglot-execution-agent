@@ -63,7 +63,7 @@ def run(state: TradeState) -> dict:
     Call the LLM to determine execution strategy for the incoming trade request.
 
     Returns a partial state dict — LangGraph merges it with the existing state.
-    Pattern is identical to SNIE's triage node: try → structured output → fallback.
+    Pattern: try → structured output → fallback.
     """
     errors: list[str] = list(state.get("errors", []))
     trade = state.get("trade_request", {})

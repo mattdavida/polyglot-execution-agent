@@ -1,7 +1,6 @@
 """
 Fail-fast environment configuration.
 All required variables raise at import time if missing.
-Pattern adapted from the Structured Notes Intelligence Engine.
 """
 
 import os

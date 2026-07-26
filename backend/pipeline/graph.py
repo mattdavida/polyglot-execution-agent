@@ -11,12 +11,11 @@ Graph structure:
                           │                │
                          END          hitl_node [INTERRUPT again]
 
-KEY DIFFERENCE FROM SNIE
-─────────────────────────
-SNIE's graph runs to completion in a background thread. This graph uses a
-SQLite checkpointer and interrupt() to PAUSE mid-execution and wait for a
-human decision. The graph is resumed via Command(resume=feedback) from the
-FastAPI /api/resume/{thread_id} endpoint.
+HITL PATTERN
+─────────────
+This graph uses a SQLite checkpointer and interrupt() to PAUSE mid-execution
+and wait for a human decision. The graph is resumed via Command(resume=feedback)
+from the FastAPI /api/resume/{thread_id} endpoint.
 
 This is the synchronous HITL pattern — not async polling of a completed result.
 
@@ -87,7 +86,7 @@ def build_graph(checkpointer: BaseCheckpointSaver) -> StateGraph:
     workflow = StateGraph(TradeState)
 
     # ── Node registration ─────────────────────────────────────────────────────
-    # Pattern from SNIE: each node is a module with a run() function.
+    # Each node is a module with a run() function.
     workflow.add_node("strategy_node",   strategy_node.run)
     workflow.add_node("simulation_node", simulation_node.run)
     workflow.add_node("hitl_node",       hitl_node.run)

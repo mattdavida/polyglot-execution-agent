@@ -1,7 +1,7 @@
 @import "tailwindcss";
 @plugin "daisyui";
 
-/* Trading terminal palette — matches the dark, professional SNIE aesthetic */
+/* Trading terminal palette — dark, professional */
 body {
   background-color: #141516;
   color: #d1d5db;
