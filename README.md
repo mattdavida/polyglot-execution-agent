@@ -1,18 +1,44 @@
-# Execution Agent
+# Polyglot Execution Agent
 
-> Agentic HITL trading desk: LLM strategy + C++20 LOB simulation + human approval before any order is dispatched.  
-> A POC demonstrating the architectural boundary between unstructured LLM reasoning and deterministic high-performance computation.
+> Modern AI systems should reason, not calculate. This proof of concept demonstrates a production-inspired architecture that safely composes probabilistic LLM reasoning with deterministic native computation through hard architectural boundaries — not prompt engineering.
+
+![HITL review panel — strategy and C++ metrics side by side](docs/screenshots/04-hitl-panel.png)
 
 ---
 
-## What It Does
+## Architecture at a Glance
+
+```
+Trader submits trade request
+         ↓
+   LangGraph strategy_node      LLM decides: VWAP / TWAP / Sweep / Iceberg
+         ↓                      ~4–8 seconds
+   LangGraph simulation_node    C++ LOB engine sweeps real ZN book
+         ↓                      p50 = 0.6 µs
+   hitl_node  interrupt()       graph checkpointed to SQLite, API returns
+         ↓
+   Trader reviews               LLM strategy + C++ metrics side by side
+         ↓
+   Approve / Modify / Abort     POST /api/resume/{thread_id}
+         ↓
+   execution_node               log + write output JSON → END
+```
+
+| Step | Component | Latency |
+|---|---|---|
+| Strategy formulation | Azure OpenAI LLM | ~4–8 s |
+| LOB simulation | C++20 engine (pybind11) | p50 = 0.6 µs, p99 = 1.1 µs |
+| Graph checkpoint | SQLite `SqliteSaver` | < 5 ms |
+| HITL resume | FastAPI → LangGraph | < 30 ms |
+
+## Key Capabilities
 
 - **Accepts** a natural-language trade request ("Liquidate 50,000 ZN contracts by EOD — factory delay news")
-- **Formulates** an execution strategy via LLM (VWAP / TWAP / Sweep / Iceberg, number of slices, shares per slice) — the LLM decides *how*, never *what the numbers are*
-- **Computes** exact slippage, market impact, average fill price, and total cost by sweeping a real Level 2 order book in a C++20 engine via pybind11 — p50 = 0.6 µs, p99 = 1.1 µs across 100k iterations, zero allocation on the hot path
-- **Pauses** the LangGraph execution and surfaces both the LLM strategy and the C++ metrics to the trader for review (the HITL panel)
-- **Resumes** with one of three trader decisions: **Approve** (dispatch the order), **Modify** (override slice parameters and re-run C++ simulation), or **Abort** (cancel cleanly)
-- **Persists** every approved trade as a JSON record in `output/` and checkpoints the full graph state to SQLite for auditability
+- **Formulates** an execution strategy via LLM — algorithm selection (VWAP / TWAP / Sweep / Iceberg), slice count, contracts per slice. The LLM reasons about *approach*; it never computes a number.
+- **Computes** exact slippage, market impact, average fill price, and total cost in a C++20 LOB engine via pybind11 — p50 = 0.6 µs, p99 = 1.1 µs across 100k iterations, zero allocation on the hot path. All arithmetic lives here, never in the LLM.
+- **Pauses** mid-graph via LangGraph `interrupt()` — the full graph state checkpoints to SQLite and the API returns. The trader sees both the LLM strategy and the C++ metrics side by side with no time pressure.
+- **Resumes** with one of three trader decisions: **Approve** (dispatch), **Modify** (override slice parameters and re-run the C++ simulation), or **Abort** (cancel cleanly with no order sent)
+- **Persists** every approved trade as a JSON record in `output/` and retains the full graph checkpoint in SQLite for auditability and replay
 
 ---
 
