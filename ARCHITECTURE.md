@@ -1,19 +1,17 @@
-# Project Plan v2: Polyglot Execution Agent (Agentic HITL Trading Desk)
+# Polyglot Execution Agent — Architecture & Design Decisions
 
 > **Status:** POC complete. All phases 0–5 delivered. See [README.md](README.md) for build status and [DEMO.md](DEMO.md) for the full walkthrough.  
-> **Design Philosophy:** This is a learning project first, POC second. Complexity is intentional. We will not soften the C++ requirements — that rigor is the point.
+> **Design Philosophy:** Complexity is intentional. The C++ rigor is the point — this architecture is built to demonstrate a hard boundary between probabilistic AI and deterministic computation.
 
 ---
 
 ## 1. Project Context & Business Goal
 
-**The Developer:** A Senior Full-Stack Engineer / Technical Lead (10 YOE) in financial services consulting, actively transitioning into high-performance, low-latency C++ systems engineering. This project is both a portfolio artifact and a training ground.
-
 **The Goal:** Build a Proof of Concept that showcases a "best of both worlds" architecture — using LLMs for unstructured reasoning and strategy formulation, while offloading strict, deterministic computation to a high-speed C++20 core.
 
-**The Value Proposition:** LLMs hallucinate. In financial execution, an LLM must never calculate slippage or market impact. This architecture proves to clients that AI can be safely *constrained* by deterministic, high-performance native systems, with a Human-In-The-Loop (HITL) safety net as the final gate before any action is taken.
+**The Value Proposition:** LLMs hallucinate. In financial execution, an LLM must never calculate slippage or market impact. This architecture proves that AI can be safely *constrained* by deterministic, high-performance native systems, with a Human-In-The-Loop (HITL) safety net as the final gate before any action is taken.
 
-**Reference Architecture:** The orchestration and frontend patterns are borrowed and adapted from the existing "Structured Notes Intelligence Engine" (SNIE) — a proven RAG + LangGraph pipeline. The key difference is: SNIE's "analyst-in-the-loop" is *asynchronous* (review later). This system's HITL must be *synchronous* — the graph pauses mid-execution and a trader must resolve it before any state transition continues.
+**HITL Design Choice:** Prior analyst-in-the-loop patterns (e.g. document review pipelines) are *asynchronous* — the graph runs to completion and the analyst reviews a finished artifact. This system requires a *synchronous* HITL — the graph pauses mid-execution, its entire state serialized, and a trader must act before any state transition continues.
 
 ---
 
@@ -87,9 +85,9 @@ Trader submits prompt
 
 This is the most architecturally important detail in the system. It must be correct before any code is written.
 
-### 4.1 Why SNIE's approach does not work here
+### 4.1 Why an async approach does not work here
 
-SNIE runs LangGraph to completion in a background thread and stores results in Postgres. The analyst reviews a completed artifact. There is no live paused graph.
+An async analyst-review pattern runs LangGraph to completion in a background thread and stores results for later review. The analyst reviews a completed artifact. There is no live paused graph.
 
 This system needs a *live paused graph* — a graph that is suspended mid-execution, with its entire state serialized, waiting for human input to resume.
 
@@ -159,26 +157,20 @@ These constraints exist because this is deliberate training for HFT systems. The
 
 Phase 2 (the LOB core) is the highest-risk phase. A correctly pre-allocated, intrusive LOB with a working market-order sweep is non-trivial. Budget significant time here. If the LOB implementation is blocked, the fallback is a correct-but-non-zero-allocation implementation to unblock Phases 3 and 4, with the low-latency version completed in parallel. Do not let C++ block the full system.
 
-### 5.3 Windows Build Toolchain — Confirmed Ready
+### 5.3 Windows Build Toolchain
 
-The full toolchain is already operational on this machine. SNIE and the Cpp_Mods UE4SS workspace were both developed here. No new installs required.
+| Tool | Requirement |
+| :--- | :--- |
+| Visual Studio 2022 (C++ workload) | MSVC x64 compiler (`cl.exe`) |
+| CMake 3.22+ | Bundled with VS |
+| Ninja | Bundled with VS at `Common7/IDE/CommonExtensions` |
+| Python 3.11+ + venv | Backend runtime and pybind11 host |
+| Azure OpenAI credentials | Populate `.env` from `.env.example` |
+| clangd / Cursor | `cpp/.clangd` strips MSVC flags for IntelliSense |
 
-| Tool | Status | Source |
-| :--- | :--- | :--- |
-| Visual Studio 2022 (C++ workload) | **Confirmed** | Cpp_Mods active UE4SS build |
-| MSVC x64 (`cl.exe`) | **Confirmed** | Cpp_Mods `gen-compile-commands.ps1` loads it |
-| CMake 3.22+ | **Confirmed** | Bundled with VS, used in Cpp_Mods presets |
-| Ninja | **Confirmed** | Bundled with VS at `Common7/IDE/CommonExtensions` |
-| Python + venv workflow | **Confirmed** | SNIE developed on this machine |
-| Azure OpenAI credentials | **Confirmed** | SNIE `.env` is the source of truth |
-| clangd IntelliSense in Cursor | **Confirmed** | Cpp_Mods `.clangd` + preset pattern working |
+**Build pattern:** `build.ps1` loads the MSVC dev shell, configures CMake with `Python3_ROOT_DIR` pointing at the active venv, builds with Ninja, and copies `compile_commands.json` for clangd. Run it with the venv active.
 
-**Directly reusable from Cpp_Mods:**
-* `gen-compile-commands.ps1` → adapt into a unified `build.ps1` (for pybind11, CMake both compiles and emits `compile_commands.json` — no separate xmake step)
-* `.clangd` → copy verbatim, remove only the UE4SS `deprecated-declarations` suppression
-* `CMakePresets.json` `intellisense` preset → adapt with `Python3_ROOT_DIR` pointing at the venv
-
-**One remaining note:** The compiled output is a `.pyd` (Windows DLL with Python ABI). `pybind11_add_module()` in CMake handles this automatically — no manual configuration needed.
+**Note:** The compiled output is a `.pyd` (Windows DLL with Python ABI). `pybind11_add_module()` in CMake handles this automatically — no manual configuration needed.
 
 ---
 
@@ -247,20 +239,17 @@ This feature separates the demo from a static results page. It is optional for c
 
 ## 8. Phased Execution Roadmap (Revised)
 
-### Phase 0: Environment & Toolchain — Mostly Pre-Solved (~30 min)
-*Goal: Prove the pybind11 bridge compiles and imports. Everything except pybind11 itself is already installed.*
+### Phase 0: Environment & Toolchain
+*Goal: Prove the pybind11 bridge compiles and imports.*
 
-All compiler/CMake/Ninja toolchain confirmed via Cpp_Mods and SNIE workspaces. Only pybind11 wiring is new.
-
-1. Create a Python `venv` for execution_agent: `python -m venv .venv`
+1. Create a Python `venv`: `python -m venv .venv`
 2. Activate and install: `pip install pybind11`
 3. Confirm: `python -m pybind11 --includes` (outputs the header paths CMake needs)
-4. Write a minimal `CMakeLists.txt` using `pybind11_add_module(hello_cpp hello.cpp)` pointing `Python3_ROOT_DIR` at the venv
-5. Adapt `gen-compile-commands.ps1` from Cpp_Mods into a `build.ps1` that loads the MSVC dev shell and runs `cmake --build` (replaces xmake — CMake both compiles and emits `compile_commands.json`)
-6. Copy `.clangd` from Cpp_Mods, remove the UE4SS-specific suppression line
-7. Run `build.ps1`, then `python -c "import hello_cpp; print(hello_cpp.greet())"`
+4. Write a minimal `CMakeLists.txt` using `pybind11_add_module` pointing `Python3_ROOT_DIR` at the venv
+5. Write `build.ps1` to load the MSVC dev shell and run `cmake --build` (CMake both compiles and emits `compile_commands.json`)
+6. Configure `cpp/.clangd` to strip MSVC-specific flags for IntelliSense
 
-**Exit criterion:** `hello_cpp.greet()` prints `"Hello from C++"` in the venv. Estimated: 30 minutes.
+**Exit criterion:** pybind11 smoke-test module imports and returns expected output from Python. ✅ Complete.
 
 ### Phase 1: The C++ / Python Bridge Scaffold
 *Goal: Prove the pybind11 bridge is functional with real timing instrumentation.*
@@ -342,8 +331,8 @@ struct OrderBook {
 * **Resolution Panel** — shows final approved/rejected/modified trade record
 
 **Implementation notes:**
-* Proxy `/api/*` → FastAPI (`localhost:3001`) in `next.config.ts` (same pattern as SNIE)
-* Use AG Grid for the metrics display — already in the SNIE tech stack
+* Proxy `/api/*` → FastAPI (`localhost:3001`) in `next.config.ts`
+* Use DaisyUI components for the metrics display
 * `simulation_latency_us` should be displayed prominently — it is a demo talking point
 
 **Exit criterion:** End-to-end demo runnable from a single terminal: `uvicorn` + `next dev`. Submit a trade, watch reasoning stream, review metrics, click Approve.
@@ -356,7 +345,7 @@ These are the questions to resolve before locking the final plan:
 
 | # | Question | Status | Decision |
 | :-- | :-- | :-- | :-- |
-| 1 | **Azure OpenAI or OpenAI direct?** | **Resolved** | Azure OpenAI — same deployment as SNIE. Reuse `.env`. |
+| 1 | **Azure OpenAI or OpenAI direct?** | **Resolved** | Azure OpenAI — dedicated resource per project. Credentials in `.env`. |
 | 2 | **SQLite or Postgres for checkpointer?** | **Resolved** | SQLite. Checkpointer state is graph snapshots, not relational data. Zero config, single file. One-line swap to Postgres if deploying. |
 | 3 | **Is `execution_node` a stub or real?** | **Resolved** | POC stub — logs approved trade to stdout and a `.json` file. No FIX protocol. |
 | 4 | **Streaming (SSE) — Phase 4 or nice-to-have?** | **Resolved** | Phase 4b (demo polish). Build Phase 4 core with `graph.invoke()` (sync) first. Prove all three HITL resume paths are correct, then swap to `graph.astream()` and wire the frontend `EventSource` as an isolated, final pass. Keeps HITL debugging clean. |
@@ -368,7 +357,7 @@ These are the questions to resolve before locking the final plan:
 ## 10. Phase 5: Azure Infrastructure (Bicep)
 *Goal: Make the project one-command reproducible for any future developer or client demo.*
 
-Executed **after** Phase 4's local exit criterion is green. Adapted directly from SNIE's `infra/` — same structure, simpler resource set (no Postgres, no ChromaDB).
+Executed **after** Phase 4's local exit criterion is green. Simpler resource set than a full RAG pipeline — no Postgres, no vector store. Checkpointer is SQLite (file-based, no Azure resource).
 
 **Azure resources required:**
 
@@ -378,16 +367,14 @@ Executed **after** Phase 4's local exit criterion is green. Adapted directly fro
 | Key Vault | `modules/keyvault.bicep` | Stores API key for prod; skip for local dev |
 | App Service Plan + Apps | `modules/app-service.bicep` | Gated by `deployAppService` flag (false by default) |
 
-**Not needed (vs SNIE):** PostgreSQL, ChromaDB. Checkpointer is SQLite (file-based, no Azure resource).
-
 **Deliverables:**
 * `infra/main.bicep` — orchestrates openai + keyvault + appService modules
-* `infra/modules/openai.bicep` — chat-only deployment (copied + trimmed from SNIE)
-* `infra/modules/keyvault.bicep` — copied verbatim from SNIE
+* `infra/modules/openai.bicep` — chat-only deployment
+* `infra/modules/keyvault.bicep` — API key storage
 * `infra/modules/app-service.bicep` — FastAPI backend + Next.js frontend apps
 * `infra/params/dev.bicepparam` — project name `exa`, dev SKUs
 * `infra/params/prod.bicepparam` — prod SKUs
-* `infra/deploy.ps1` — adapted from SNIE: remove `$SqlPassword` param and SQL firewall logic; update `.env` print block to execution_agent vars
+* `infra/deploy.ps1` — provisions resources and prints `.env` values on success
 * `infra/cleanup.ps1` — removes the resource group
 
 **One-command local dev onboarding (future dev):**

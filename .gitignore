@@ -11,7 +11,7 @@ cpp/compile_commands.json
 *.dll
 
 # LangGraph checkpointer
-checkpoints.db
+checkpoints.*
 
 # Python
 __pycache__/

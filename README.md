@@ -167,7 +167,7 @@ POST /api/resume/{thread_id}  trader acts
 
 ## The C++ Compute Core
 
-The C++ engine (`cpp/src/execution_engine.cpp`) is the architectural centrepiece of the POC. It demonstrates HFT-style design patterns deliberately — this is a training ground, not a shortcut.
+The C++ engine (`cpp/src/execution_engine.cpp`) is the architectural centrepiece of the POC. Every design constraint is deliberate — the goal is to demonstrate what a production-grade HFT-style LOB engine looks like at the boundary with a Python orchestration layer.
 
 ### Design constraints followed
 
