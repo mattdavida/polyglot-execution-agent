@@ -1,0 +1,23 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "dev",
+      "displayName": "Dev (Ninja + MSVC x64)",
+      "description": "Ninja build — compiles the .pyd and emits compile_commands.json for clangd. pybind11_DIR and Python3_ROOT_DIR are injected by build.ps1 from the active .venv.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-ninja",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "dev",
+      "configurePreset": "dev",
+      "configuration": "Release"
+    }
+  ]
+}

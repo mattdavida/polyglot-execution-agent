@@ -1,0 +1,33 @@
+# Environment
+.env
+.venv/
+
+# C++ build artifacts
+cpp/build-ninja/
+cpp/build/
+cpp/compile_commands.json
+*.pyd
+*.so
+*.dll
+
+# LangGraph checkpointer
+checkpoints.db
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Next.js
+frontend/.next/
+frontend/node_modules/
+
+# clangd index cache
+cpp/.cache/
+
+# Approved trade records (local audit only)
+output/
+
+# Misc
+.DS_Store

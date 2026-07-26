@@ -1,0 +1,22 @@
+@import "tailwindcss";
+@plugin "daisyui";
+
+/* Trading terminal palette — matches the dark, professional SNIE aesthetic */
+body {
+  background-color: #141516;
+  color: #d1d5db;
+}
+
+/* Pulsing dot for the "live" status indicator */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.3; }
+}
+.pulse-dot {
+  animation: pulse-dot 1.5s ease-in-out infinite;
+}
+
+/* Bps colouring helpers — applied dynamically in JS */
+.bps-good    { color: #4ade80; }   /* green  — low slippage  */
+.bps-warn    { color: #facc15; }   /* amber  — medium        */
+.bps-bad     { color: #f87171; }   /* red    — high slippage */

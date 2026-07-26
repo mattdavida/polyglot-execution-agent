@@ -1,0 +1,13 @@
+# Orchestration
+langgraph>=0.2
+langchain-openai>=0.3
+langgraph-checkpoint-sqlite>=1.0
+
+# API
+fastapi>=0.115
+uvicorn[standard]>=0.30
+
+# Utilities
+python-dotenv>=1.0
+pybind11>=2.13
+pydantic>=2.0
