@@ -230,6 +230,8 @@ The result is a realistic book with irregular depth (e.g. 29 contracts at one le
 
 **Note on spread:** ZN 2016-12-23 is a locked market throughout the session (best bid = best ask = 0-tick spread). This is a valid real condition in highly liquid CME futures. Slippage is still non-trivial (1.4–2.0 bps for a 50–200 contract order) because it comes from sweeping through multiple depth levels at different prices, not from the bid-ask spread itself. Run `python benchmark_simulate.py` to see the full latency distribution: p50 = 0.6 µs, p99 = 1.1 µs across 100,000 iterations.
 
+**Note on data provenance:** `data/2016_12_23.csv` is a sample Bloomberg tick file sourced from a publicly available demonstration dataset. It is included here for educational and demonstration purposes only. This is publicly available historic market data — ZN futures prices are not proprietary — but it should not be redistributed for commercial use or treated as a licensed data feed.
+
 ---
 
 ## API Routes
