@@ -9,7 +9,7 @@
 
 - **Accepts** a natural-language trade request ("Liquidate 50,000 ZN contracts by EOD — factory delay news")
 - **Formulates** an execution strategy via LLM (VWAP / TWAP / Sweep / Iceberg, number of slices, shares per slice) — the LLM decides *how*, never *what the numbers are*
-- **Computes** exact slippage, market impact, average fill price, and total cost by sweeping a real Level 2 order book in a C++20 engine via pybind11 — microsecond latency, zero allocation on the hot path
+- **Computes** exact slippage, market impact, average fill price, and total cost by sweeping a real Level 2 order book in a C++20 engine via pybind11 — p50 = 0.6 µs, p99 = 1.1 µs across 100k iterations, zero allocation on the hot path
 - **Pauses** the LangGraph execution and surfaces both the LLM strategy and the C++ metrics to the trader for review (the HITL panel)
 - **Resumes** with one of three trader decisions: **Approve** (dispatch the order), **Modify** (override slice parameters and re-run C++ simulation), or **Abort** (cancel cleanly)
 - **Persists** every approved trade as a JSON record in `output/` and checkpoints the full graph state to SQLite for auditability
@@ -21,7 +21,7 @@
 | Layer | Choice |
 |---|---|
 | LLM / Orchestration | LangGraph `StateGraph` + Azure OpenAI `gpt-4o` |
-| HITL mechanism | `interrupt()` + `Command(resume=...)` + SQLite `MemorySaver` |
+| HITL mechanism | `interrupt()` + `Command(resume=...)` + `SqliteSaver` |
 | C++ compute core | C++20, pybind11 3.x, pre-allocated LOB, intrusive index list, GIL release |
 | Build toolchain | CMake 3.22+ + Ninja + MSVC x64 (Windows) |
 | API | FastAPI + Uvicorn |
@@ -200,7 +200,9 @@ The LOB is populated from a real Bloomberg tick file for **ZN (10-Year Treasury 
 3. Anchoring to the last trade price to eliminate stale levels that accumulate as the market moves
 4. Returning the top 10 levels per side, sorted correctly for the C++ engine
 
-The result is a realistic book with irregular depth (e.g. 29 contracts at one level, 5 at the best ask) that produces non-trivial, meaningful slippage numbers — unlike a symmetric dummy book.
+The result is a realistic book with irregular depth (e.g. 29 contracts at one level, 9 at the best ask) that produces non-trivial, meaningful slippage numbers — unlike a symmetric dummy book.
+
+**Note on spread:** ZN 2016-12-23 is a locked market throughout the session (best bid = best ask = 0-tick spread). This is a valid real condition in highly liquid CME futures. Slippage is still non-trivial (1.4–2.0 bps for a 50–200 contract order) because it comes from sweeping through multiple depth levels at different prices, not from the bid-ask spread itself. Run `python benchmark_simulate.py` to see the full latency distribution: p50 = 0.6 µs, p99 = 1.1 µs across 100,000 iterations.
 
 ---
 

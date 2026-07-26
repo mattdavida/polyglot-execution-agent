@@ -2,6 +2,8 @@
 
 > **Status:** POC complete. All phases 0–5 delivered. See [README.md](README.md) for build status and [DEMO.md](DEMO.md) for the full walkthrough.  
 > **Design Philosophy:** Complexity is intentional. The C++ rigor is the point — this architecture is built to demonstrate a hard boundary between probabilistic AI and deterministic computation.
+>
+> **Note — this is a design log, not a living spec.** It captures original intent and key decisions made during development. Where implementation diverged from the design, divergences are noted inline with a `> Implementation divergence` callout. The current shipped state is always described in [README.md](README.md).
 
 ---
 
@@ -19,12 +21,12 @@
 
 | Layer | Technology | Purpose |
 | :--- | :--- | :--- |
-| **Backend API** | Python, FastAPI, Uvicorn | HTTP + SSE server. Bridges LangGraph to the frontend. Owns the `/resume` endpoint contract. |
-| **Cognitive / Orchestration** | LangGraph, Azure OpenAI | Ingests trade requests, formulates strategy (VWAP vs. Sweep vs. Iceberg), routes state, issues the synchronous HITL pause. |
-| **Compute Core** | C++20 | Deterministic Limit Order Book (LOB) simulator. Pre-allocated, zero-heap-allocation matching engine. Calculates exact slippage, market impact, and fill cost in microseconds. |
+| **Backend API** | Python, FastAPI, Uvicorn | HTTP server. Bridges LangGraph to the frontend. Owns the `/trade`, `/trade/{id}`, and `/resume/{id}` endpoint contract. |
+| **Cognitive / Orchestration** | LangGraph, Azure OpenAI | Ingests trade requests, formulates strategy (VWAP vs. TWAP vs. Sweep vs. Iceberg), routes state, issues the synchronous HITL pause via `interrupt()` + `Command(resume=...)`. |
+| **Compute Core** | C++20 | Deterministic Limit Order Book (LOB) simulator. Pre-allocated, zero-heap-allocation matching engine. Calculates exact slippage, market impact, and fill cost in microseconds. GIL released for native thread execution. |
 | **The Bridge** | `pybind11` | Exposes the C++ core to Python as a native module (`import execution_engine`). The boundary between probabilistic AI and deterministic math. |
-| **Frontend UI** | Next.js 16, Tailwind, AG Grid | Trader dashboard. Streams LLM reasoning live via SSE. Displays C++ computed metrics. Issues Approve / Modify / Reject back to the FastAPI backend. |
-| **State Persistence** | SQLite (dev) → Postgres (prod) | LangGraph checkpointer. Required for synchronous HITL — the graph's mid-execution state must survive the HTTP round-trip between pause and resume. |
+| **Frontend UI** | Next.js 16, Tailwind v4, DaisyUI | Trader dashboard. Displays LLM strategy and C++ metrics side by side. Issues Approve / Modify / Abort back to the FastAPI backend via polling (SSE streaming is Phase 6). |
+| **State Persistence** | SQLite (`SqliteSaver`) | LangGraph checkpointer. Required for synchronous HITL — the graph's mid-execution state must survive the HTTP round-trip between pause and resume. |
 
 ---
 
@@ -53,8 +55,10 @@ Trader submits prompt
 [LangGraph] hitl_node  ← INTERRUPT HERE
   Graph checkpoints state to SQLite/Postgres
   FastAPI receives the paused state
-  SSE stream pushes { status: "awaiting_approval", thread_id, reasoning, metrics }
-  to the frontend
+  Frontend polling detects paused state via GET /api/trade/{thread_id}
+  and renders the HITL review panel
+  [Note: SSE streaming of LLM tokens was the original design here — see Section 2
+   stack table for current shipped behaviour (polling). SSE is Phase 6.]
         │
         ▼
 [Next.js Dashboard]
@@ -63,19 +67,21 @@ Trader submits prompt
     - C++ computed: slippage_bps, market_impact_bps, total_cost_usd
   Trader acts:
     ┌─────────────┬────────────────┬───────────────┐
-    │   APPROVE   │    MODIFY      │    REJECT     │
+    │   APPROVE   │    MODIFY      │     ABORT     │
     │             │ (new params)   │               │
     └──────┬──────┴───────┬────────┴──────┬────────┘
            │              │               │
            ▼              ▼               ▼
    POST /api/resume  POST /api/resume  POST /api/resume
-   { action: ok }   { action: revise  { action: abort }
-                      slices: 3 }
+   { action:        { action:         { action:
+     "approve" }      "revise",         "abort" }
+                      override_params:
+                      { slices: 3 } }
         │              │
         ▼              ▼
-[LangGraph resumes via thread_id + checkpointer]
-    approve → execution_node (stub: log the fills)
-    revise  → simulation_node (re-run C++ with new params)
+[LangGraph resumes via thread_id + Command(resume=feedback)]
+    approve → execution_node (stub: log the fills, write JSON)
+    revise  → simulation_node (re-run C++ with override params)
     abort   → end
 ```
 
@@ -97,9 +103,11 @@ LangGraph supports this via a persistent `Checkpointer`. The graph is compiled w
 
 ```python
 from langgraph.checkpoint.sqlite import SqliteSaver
+import sqlite3
 
-checkpointer = SqliteSaver.from_conn_string("./checkpoints.db")
-graph = workflow.compile(checkpointer=checkpointer, interrupt_before=["hitl_node"])
+conn = sqlite3.connect("./checkpoints.db", check_same_thread=False)
+checkpointer = SqliteSaver(conn)
+graph = workflow.compile(checkpointer=checkpointer)
 ```
 
 Every `graph.invoke(...)` call must pass a `config` with a unique `thread_id`:
@@ -110,6 +118,11 @@ graph.invoke({"trade_request": prompt}, config=config)
 ```
 
 When the graph hits `hitl_node`, it serializes its state to the checkpointer DB and returns control to the caller. The `thread_id` is the key to resuming it later.
+
+> **Implementation divergence — `interrupt()` vs `interrupt_before`:**
+> The original design above used `interrupt_before=["hitl_node"]` at compile time, which stops the graph *before* `hitl_node` runs. The shipped implementation uses `interrupt()` called *inside* `hitl_node` instead.
+>
+> Why: `interrupt_before` stops before the node executes, meaning `hitl_node` never runs on the first pass — it has no opportunity to package the strategy and metrics into the feedback payload the frontend needs. `interrupt()` inside the node lets it run its first-pass logic (build the payload, expose it for polling), then pause. When resumed, `interrupt()` returns the trader's decision directly as its value, and the node completes normally. See `backend/pipeline/nodes/hitl_node.py` for the full explanation.
 
 ### 4.3 The Resume Endpoint
 
@@ -307,7 +320,7 @@ struct OrderBook {
 * Define `TradeState` TypedDict (Section 6 above).
 * Build `strategy_node`: LLM call with structured output (`Strategy` TypedDict). Prompt engineering is explicit — the LLM is told it must NOT perform any numerical calculation; it only decides approach and slicing.
 * Build `simulation_node`: imports `execution_engine` (C++ module), calls `simulate()`, writes `SlippageMetrics` to state. Accepts `override_params` from `HumanFeedback` for the revise path.
-* Build `hitl_node`: declared as the interrupt point. In practice it is a pass-through node — LangGraph's `interrupt_before=["hitl_node"]` does the pause.
+* Build `hitl_node`: the pause point. Original design used `interrupt_before=["hitl_node"]` at compile time — shipped implementation uses `interrupt()` called inside the node. See Section 4.2 for the full divergence note and rationale.
 * Build `execution_node`: POC stub — logs the approved trade to stdout and a text file.
 * Wire the graph edges including the conditional resume routing (`approve` / `revise` / `abort`).
 * Build FastAPI backend:
@@ -326,9 +339,9 @@ struct OrderBook {
 * **HITL Review Panel** — displays:
   - LLM reasoning block (natural language strategy)
   - C++ metrics table: `avg_fill_price`, `slippage_bps`, `market_impact_bps`, `total_cost_usd`, `simulation_latency_us`
-  - **[APPROVE]** / **[MODIFY]** / **[REJECT]** action buttons
-* **Modify Modal** — lets trader override `num_slices` / `shares_per_slice`, re-runs simulation
-* **Resolution Panel** — shows final approved/rejected/modified trade record
+  - **[APPROVE]** / **[MODIFY]** / **[ABORT]** action buttons
+* **Modify Form** — inline override for `num_slices` / `shares_per_slice`, triggers re-simulation via `action: "revise"`
+* **Resolution Panel** — shows final approved/aborted/revised trade record
 
 **Implementation notes:**
 * Proxy `/api/*` → FastAPI (`localhost:3001`) in `next.config.ts`
@@ -349,7 +362,7 @@ These are the questions to resolve before locking the final plan:
 | 2 | **SQLite or Postgres for checkpointer?** | **Resolved** | SQLite. Checkpointer state is graph snapshots, not relational data. Zero config, single file. One-line swap to Postgres if deploying. |
 | 3 | **Is `execution_node` a stub or real?** | **Resolved** | POC stub — logs approved trade to stdout and a `.json` file. No FIX protocol. |
 | 4 | **Streaming (SSE) — Phase 4 or nice-to-have?** | **Resolved** | Phase 4b (demo polish). Build Phase 4 core with `graph.invoke()` (sync) first. Prove all three HITL resume paths are correct, then swap to `graph.astream()` and wire the frontend `EventSource` as an isolated, final pass. Keeps HITL debugging clean. |
-| 5 | **LOB market data — static or dynamic?** | **Resolved** | Static dummy book (hardcoded depth levels). Dynamic feed is out of scope for POC. |
+| 5 | **LOB market data — static or dynamic?** | **Resolved (updated)** | Shipped with real Bloomberg ZN tick data (2016-12-23, 58k rows). `book_loader.py` reconstructs a Level 2 book via a time-windowed accumulation anchored to last trade price. Dynamic live feed remains out of scope for POC. |
 | 6 | **Windows `.pyd` vs WSL `.so`?** | **Resolved** | Native Windows MSVC confirmed. No WSL needed. |
 
 ---
@@ -402,6 +415,6 @@ The POC is complete and presentable when the following are true end-to-end:
 2. The LLM produces a named strategy with slice parameters — and does **not** perform any arithmetic.
 3. The C++ module returns verifiable slippage numbers in < 100µs.
 4. The dashboard displays both the LLM reasoning and the C++ metrics side-by-side.
-5. The trader can Approve, Modify (triggering a C++ re-simulation), or Reject.
+5. The trader can Approve, Modify (triggering a C++ re-simulation), or Abort.
 6. The graph resumes correctly in all three paths.
 7. The `simulation_latency_us` value is visible in the UI — this is the demo's proof-of-concept moment.
