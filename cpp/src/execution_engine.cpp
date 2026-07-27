@@ -126,13 +126,18 @@ void ExecutionSimulator::load_book(
 // walked up the book and consumed worse levels. For small orders vs. deep
 // books, slippage is near zero. For large orders vs. thin books, it's high.
 //
-// MARKET IMPACT MODEL (simplified for POC)
-// ─────────────────────────────────────────
-// True market impact models (Almgren-Chriss, Kyle lambda) require real-time
-// volume and volatility data. For the POC we use a simple proxy:
+// MARKET IMPACT MODEL (intentionally simple — POC scope only)
+// ─────────────────────────────────────────────────────────────
+// Production-grade models (Almgren-Chriss, Kyle lambda) require real-time
+// volume and volatility data and are non-trivial to implement correctly.
+// For this POC we use a straightforward proxy:
 //   market_impact_bps = slippage_bps * 0.5
 // This assumes roughly half the slippage is permanent price impact and half
-// is temporary. Phase 3+ can replace this with a proper model.
+// is temporary — a reasonable first-order approximation for a demo.
+//
+// In a real deployment this module would be replaced by (or wrap) the firm's
+// existing execution analytics library. Most shops already have a calibrated
+// impact model in production — the integration point is here, not a rewrite.
 //
 // WHY noexcept?
 // ─────────────

@@ -159,7 +159,7 @@ The book loader line at the top confirms the real ZN data is being used: `10 bid
 
 ## Notes for reviewers
 
-**Suggested demo trade:** `ZN`, 200 contracts, `EOD`, rationale: `factory delay news — reducing duration exposure before close`. This exercises the full pipeline and typically produces VWAP or TWAP with 3–8 bps slippage on the real Bloomberg book.
+**Suggested demo trade:** `ZN`, 200 contracts, `EOD`, rationale: `factory delay news — reducing duration exposure before close`. This exercises the full pipeline and typically produces VWAP or TWAP with 3–8 bps slippage on the real ZN order book.
 
 **What to focus on:**
 
@@ -170,6 +170,6 @@ The book loader line at the top confirms the real ZN data is being used: `10 bid
 **What this tool is not (yet):**
 
 - It does not connect to a live OMS or order routing system — `execution_node` is a POC stub that logs and writes JSON
-- The order book is a snapshot reconstructed from a 2016 Bloomberg tick file — not a live feed
+- The order book is a snapshot reconstructed from a historical tick dataset — not a live feed
 - SSE streaming of LLM reasoning tokens to the frontend is scoped for Phase 6
 - The frontend is single-session — concurrent trades on the same browser tab are not supported in the current POC

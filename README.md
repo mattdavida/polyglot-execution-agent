@@ -52,7 +52,7 @@ Trader submits trade request
 | Build toolchain | CMake 3.22+ + Ninja + MSVC x64 (Windows) |
 | API | FastAPI + Uvicorn |
 | Frontend | Next.js 16 + DaisyUI + Tailwind v4 |
-| Market data | Bloomberg ZN tick CSV (10-Year Treasury Note Futures, 2016-12-23) |
+| Market data | Real-world ZN tick dataset (source under verification), L2 book reconstruction |
 | Infrastructure | Azure Bicep (fully repeatable — `.\infra\deploy.ps1`) |
 
 ---
@@ -119,7 +119,7 @@ polyglot-execution-agent/
 ├── .env.example              # Required env var names (no values)
 ├── requirements.txt          # Python dependencies
 ├── data/
-│   └── 2016_12_23.csv        # Bloomberg ZN tick data (58,632 rows)
+│   └── 2016_12_23.csv        # ZN tick dataset — not committed, see .gitignore
 ├── output/                   # Approved trade JSON records (gitignored)
 │
 ├── cpp/
@@ -139,7 +139,7 @@ polyglot-execution-agent/
 │   ├── tools/
 │   │   ├── llm_client.py     # AzureChatOpenAI factory
 │   │   ├── cpp_bridge.py     # sys.path injection + ExecutionSimulator factory
-│   │   └── book_loader.py    # ZN L2 book reconstruction from Bloomberg CSV (lru_cached)
+│   │   └── book_loader.py    # ZN L2 book reconstruction from tick CSV (lru_cached)
 │   └── pipeline/
 │       ├── graph.py          # LangGraph StateGraph + SQLite checkpointer + interrupt
 │       ├── state.py          # TradeState TypedDict
@@ -176,7 +176,7 @@ polyglot-execution-agent/
 POST /api/trade
   ↓ strategy_node   LLM decides: VWAP / TWAP / Sweep / Iceberg, num_slices, shares_per_slice
   ↓                 structured output via Pydantic — no JSON parsing
-  ↓ simulation_node load ZN L2 book from Bloomberg CSV (lru_cached, parsed once)
+  ↓ simulation_node load ZN L2 book from tick CSV (lru_cached, parsed once)
   ↓                 call C++ ExecutionSimulator.simulate(order_size)
   ↓                 returns: avg_fill_price, slippage_bps, market_impact_bps, total_cost_usd, latency_us
   ↓ hitl_node       interrupt() — graph checkpointed to SQLite, invoke() returns to FastAPI
@@ -218,7 +218,7 @@ The C++ engine (`cpp/src/execution_engine.cpp`) is the architectural centrepiece
 
 ## Market Data
 
-The LOB is populated from a real Bloomberg tick file for **ZN (10-Year Treasury Note Futures, CME Globex)** dated 2016-12-23. The file contains 58,632 rows of `T` (trade), `B` (bid update), and `A` (ask update) ticks.
+The LOB is populated from a real-world ZN (10-Year Treasury Note Futures) tick dataset. The file uses rows of `T` (trade), `B` (bid update), and `A` (ask update) ticks in a standard CME incremental refresh format.
 
 `backend/tools/book_loader.py` reconstructs the L2 order book by:
 1. Reading only ticks within a configurable rolling window (default: 10 minutes ending at 09:30)
@@ -226,11 +226,9 @@ The LOB is populated from a real Bloomberg tick file for **ZN (10-Year Treasury 
 3. Anchoring to the last trade price to eliminate stale levels that accumulate as the market moves
 4. Returning the top 10 levels per side, sorted correctly for the C++ engine
 
-The result is a realistic book with irregular depth (e.g. 29 contracts at one level, 9 at the best ask) that produces non-trivial, meaningful slippage numbers — unlike a symmetric dummy book.
+The result is a realistic book with irregular depth that produces non-trivial, meaningful slippage numbers — unlike a symmetric dummy book. Slippage is non-trivial (1.4–2.0 bps for a 50–200 contract order) because it comes from sweeping through multiple depth levels at different prices. Run `python benchmark_simulate.py` to see the full latency distribution: p50 = 0.6 µs, p99 = 1.1 µs across 100,000 iterations.
 
-**Note on spread:** ZN 2016-12-23 is a locked market throughout the session (best bid = best ask = 0-tick spread). This is a valid real condition in highly liquid CME futures. Slippage is still non-trivial (1.4–2.0 bps for a 50–200 contract order) because it comes from sweeping through multiple depth levels at different prices, not from the bid-ask spread itself. Run `python benchmark_simulate.py` to see the full latency distribution: p50 = 0.6 µs, p99 = 1.1 µs across 100,000 iterations.
-
-**Note on data provenance:** `data/2016_12_23.csv` is a sample Bloomberg tick file sourced from a publicly available demonstration dataset. It is included here for educational and demonstration purposes only. This is publicly available historic market data — ZN futures prices are not proprietary — but it should not be redistributed for commercial use or treated as a licensed data feed.
+**Note on market data:** `data/2016_12_23.csv` is a real-world tick dataset included for demonstration purposes. Its provenance is unverified and it is not committed to the repository — see `.gitignore`. To run with real depth, obtain a compatible ZN L2 tick file and place it at `data/2016_12_23.csv`. The pipeline falls back to a hardcoded dummy book if the file is absent.
 
 ---
 
@@ -254,7 +252,7 @@ The result is a realistic book with irregular depth (e.g. 29 contracts at one le
 | 2 | Full LOB — pre-allocated intrusive list, `load_book`, `simulate`, slippage math, Phase 2 test suite | ✅ Complete |
 | 3 | LangGraph pipeline — strategy_node, simulation_node, hitl_node, execution_node, SQLite checkpointer, FastAPI routes | ✅ Complete |
 | 4 | Next.js trader dashboard — TradeForm, HitlPanel, StrategyCard, MetricsCard, full state machine | ✅ Complete |
-| 4.1 | Real ZN market data — Bloomberg tick CSV, L2 book reconstruction, lru_cached loader | ✅ Complete |
+| 4.1 | Real ZN market data — L2 book reconstruction from tick dataset, lru_cached loader | ✅ Complete |
 | 4.2 | GIL release on `simulate()` hot path | ✅ Complete |
 | 5 | Azure Bicep IaC — OpenAI, Key Vault, App Service, `deploy.ps1` | ✅ Complete |
 | 6 | Hardening — SSE streaming, Docker + C++ module packaging for Linux, multi-instrument support | 🔲 Pending |

@@ -29,5 +29,8 @@ cpp/.cache/
 # Approved trade records (local audit only)
 output/
 
+# Market data — provenance unconfirmed, not redistributed
+data/*.csv
+
 # Misc
 .DS_Store

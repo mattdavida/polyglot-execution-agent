@@ -2,10 +2,10 @@
 #
 # Verifies:
 #   1. CSV parses without error
-#   2. Book is non-crossed (spread >= 0) — ZN 2016-12-23 is a locked market
-#      (spread = 0.0 ticks) throughout the session. This is a valid real condition
-#      in liquid CME futures and does not mean the data is incorrect. Slippage
-#      still comes from sweeping through multiple depth levels, not from the spread.
+#   2. Book is non-crossed (spread >= 0) — the dataset produces a locked market
+#      (spread = 0.0 ticks). This is a valid real condition in liquid CME futures
+#      and does not mean the data is incorrect. Slippage still comes from sweeping
+#      through multiple depth levels, not from the spread.
 #   3. Asks are ascending, bids are descending (correct sort order for C++ engine)
 #   4. C++ simulate() produces non-trivial slippage against real depth
 #   5. Revision path (smaller order) produces less slippage

@@ -362,7 +362,7 @@ These are the questions to resolve before locking the final plan:
 | 2 | **SQLite or Postgres for checkpointer?** | **Resolved** | SQLite. Checkpointer state is graph snapshots, not relational data. Zero config, single file. One-line swap to Postgres if deploying. |
 | 3 | **Is `execution_node` a stub or real?** | **Resolved** | POC stub — logs approved trade to stdout and a `.json` file. No FIX protocol. |
 | 4 | **Streaming (SSE) — Phase 4 or nice-to-have?** | **Resolved** | Phase 4b (demo polish). Build Phase 4 core with `graph.invoke()` (sync) first. Prove all three HITL resume paths are correct, then swap to `graph.astream()` and wire the frontend `EventSource` as an isolated, final pass. Keeps HITL debugging clean. |
-| 5 | **LOB market data — static or dynamic?** | **Resolved (updated)** | Shipped with real Bloomberg ZN tick data (2016-12-23, 58k rows). `book_loader.py` reconstructs a Level 2 book via a time-windowed accumulation anchored to last trade price. Dynamic live feed remains out of scope for POC. |
+| 5 | **LOB market data — static or dynamic?** | **Resolved (updated)** | Shipped with a real ZN tick dataset (source under verification). `book_loader.py` reconstructs a Level 2 book via a time-windowed accumulation anchored to last trade price. Dynamic live feed remains out of scope for POC. |
 | 6 | **Windows `.pyd` vs WSL `.so`?** | **Resolved** | Native Windows MSVC confirmed. No WSL needed. |
 
 ---

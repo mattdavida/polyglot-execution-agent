@@ -33,7 +33,7 @@ print(f"  simulate() latency benchmark — {N_ITERS:,} iterations")
 print("=" * 60)
 
 # Load book once — this is lru_cached, so the benchmark measures pure C++ time.
-print("\nLoading ZN book from Bloomberg CSV...")
+print("\nLoading ZN book from tick CSV...")
 asks, bids = load_zn_book()   # load_zn_book returns (ask_list, bid_list)
 print(f"  Book: {len(bids)} bid levels, {len(asks)} ask levels")
 

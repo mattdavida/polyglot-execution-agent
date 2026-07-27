@@ -14,8 +14,8 @@ This node handles BOTH the initial simulation AND the revise path:
 
 Market data:
   Uses a real ZN (10-Year Treasury Note Futures) Level 2 book reconstructed
-  from Bloomberg tick data (2016-12-23) via book_loader.py. Falls back to a
-  hardcoded dummy book if the CSV file is not available (e.g. CI environments).
+  from an external tick dataset via book_loader.py. Falls back to a hardcoded
+  dummy book if the CSV file is not available (e.g. CI environments).
 
 Input state keys:  strategy, human_feedback (optional — only on revise path)
 Output state keys: slippage_metrics, revision_count, human_feedback (cleared), errors
@@ -50,7 +50,7 @@ def _get_book() -> tuple[list, list]:
     """
     Return the best available order book.
 
-    Tries to load the real ZN L2 book from the Bloomberg CSV first.
+    Tries to load the real ZN L2 book from the tick CSV first.
     Falls back to the hardcoded approximation if the file is missing.
     The lru_cache in load_zn_book() means the CSV is only parsed once
     across the entire application lifetime.
@@ -97,7 +97,7 @@ def run(state: TradeState) -> dict:
 
     try:
         # ── Market data ───────────────────────────────────────────────────────
-        # Load the real ZN order book (parsed from Bloomberg CSV, lru_cached).
+        # Load the real ZN order book (parsed from tick CSV, lru_cached).
         # This is the book the C++ engine will sweep to compute slippage.
         asks, bids = _get_book()
 

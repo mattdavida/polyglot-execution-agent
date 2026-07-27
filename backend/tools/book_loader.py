@@ -1,8 +1,8 @@
 """
 ZN Level 2 Order Book Loader.
 
-Reconstructs a realistic L2 order book from the Bloomberg tick CSV
-(ZN = 10-Year Treasury Note Futures, CME Globex, 2016-12-23).
+Reconstructs a realistic L2 order book from an external tick dataset
+(ZN = 10-Year Treasury Note Futures, CME Globex).
 
 CSV format (no header):
     timestamp, price (CME raw ticks), type (T/B/A), quantity (contracts)
@@ -43,8 +43,8 @@ _CSV_PATH = (
 
 # Only consider ticks within a rolling window ending at the snapshot time.
 # Using a narrow window (10 minutes) avoids the stale-level staleness problem:
-# a Bloomberg incremental feed doesn't always cancel old levels explicitly when
-# the market moves, so accumulating hours of ticks creates phantom depth.
+# incremental feeds don't always cancel old levels explicitly when the market
+# moves, so accumulating hours of ticks creates phantom depth.
 # 10 minutes is wide enough to see realistic multi-level depth build up,
 # but narrow enough that stale levels from earlier in the session are excluded.
 DEFAULT_SNAPSHOT_TIME  = time(9, 30)   # end of the window
@@ -72,7 +72,7 @@ def load_zn_book(
     max_levels:     int  = MAX_LEVELS,
 ) -> tuple[list[tuple[float, int]], list[tuple[float, int]]]:
     """
-    Parse the ZN Bloomberg CSV and return a Level 2 order book snapshot.
+    Parse the ZN tick CSV and return a Level 2 order book snapshot.
 
     Uses a rolling time window ending at snapshot_time. Only ticks within the
     window are included, avoiding the stale-level problem that arises when
@@ -174,8 +174,8 @@ def load_zn_book(
         )
 
     # ── Anchor to last trade price to avoid crossed-book artifact ─────────────
-    # This Bloomberg feed doesn't send explicit level cancellations when the
-    # market moves. As a result, old bid/ask levels from the start of the
+    # This incremental feed format doesn't send explicit level cancellations
+    # when the market moves. As a result, old bid/ask levels from the start of the
     # window linger and cross the current market. We anchor by using the last
     # traded price as the boundary:
     #   valid bids  = B levels at or below the last trade price
