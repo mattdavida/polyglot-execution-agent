@@ -37,6 +37,7 @@ export default function TradeForm({ onSubmit, disabled }: Props) {
   const [instrument,    setInstrument]    = useState("ZN");
   const [isCustom,      setIsCustom]      = useState(false);
   const [customTicker,  setCustomTicker]  = useState("");
+  const [side,          setSide]          = useState<"buy" | "sell">("sell");
   const [totalShares,   setTotalShares]   = useState("200");
   const [deadline,      setDeadline]      = useState("end of day");
   const [prompt,        setPrompt]        = useState("");
@@ -68,9 +69,9 @@ export default function TradeForm({ onSubmit, disabled }: Props) {
     // Pre-fills give the LLM enough context even with minimal input.
     const fullPrompt =
       prompt.trim() ||
-      `Execute ${shares.toLocaleString()} shares of ${instrument} by ${deadline}.`;
+      `${side === "sell" ? "Sell" : "Buy"} ${shares.toLocaleString()} ${instrument} by ${deadline}.`;
 
-    onSubmit({ prompt: fullPrompt, instrument, total_shares: shares, deadline });
+    onSubmit({ prompt: fullPrompt, instrument, side, total_shares: shares, deadline });
   }
 
   return (
@@ -112,6 +113,30 @@ export default function TradeForm({ onSubmit, disabled }: Props) {
             autoFocus
           />
         )}
+      </div>
+
+      {/* Side — explicit direction. The engine sweeps bids for a sell
+          (liquidation) and asks for a buy; never inferred from free text. */}
+      <div className="flex flex-col gap-1">
+        <span className="text-xs text-gray-500">Side</span>
+        <div className="join w-full">
+          <button
+            type="button"
+            className={`join-item btn btn-sm flex-1 ${side === "sell" ? "btn-error" : "btn-ghost border-[#2a2b2c]"}`}
+            onClick={() => setSide("sell")}
+            disabled={disabled}
+          >
+            Sell
+          </button>
+          <button
+            type="button"
+            className={`join-item btn btn-sm flex-1 ${side === "buy" ? "btn-success" : "btn-ghost border-[#2a2b2c]"}`}
+            onClick={() => setSide("buy")}
+            disabled={disabled}
+          >
+            Buy
+          </button>
+        </div>
       </div>
 
       {/* Total shares */}

@@ -45,9 +45,17 @@ export default function MetricsCard({ metrics }: Props) {
         <span className="badge badge-xs badge-success">deterministic</span>
       </div>
 
+      {/* Avg fill is in the book's native price units (raw CME ticks for ZN),
+          not dollars — only total cost is converted to USD via tick metadata. */}
       <MetricRow
-        label="Avg Fill Price"
-        value={`$${metrics.avg_fill_price.toFixed(4)}`}
+        label="Avg Fill Price (CME ticks)"
+        value={metrics.avg_fill_price.toFixed(2)}
+        mono
+      />
+      <MetricRow
+        label="Fill"
+        value={`${metrics.total_filled.toLocaleString()} (${(metrics.fill_ratio * 100).toFixed(1)}%)`}
+        className={metrics.fill_ratio < 1 ? "bps-bad" : "bps-good"}
         mono
       />
       <MetricRow
@@ -63,7 +71,7 @@ export default function MetricsCard({ metrics }: Props) {
         mono
       />
       <MetricRow
-        label="Total Cost"
+        label="Slippage Cost (USD)"
         value={`$${metrics.total_cost_usd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
         mono
       />
@@ -77,6 +85,19 @@ export default function MetricsCard({ metrics }: Props) {
         className="text-green-400"
         mono
       />
+
+      {/* Partial-fill warning — the book ran out of depth before the slice
+          completed. The trader must not approve without seeing this. */}
+      {metrics.fill_ratio < 1 && (
+        <div className="alert alert-warning py-2 px-3 mt-3 text-xs">
+          <span>
+            Partial fill: only {metrics.total_filled.toLocaleString()} contracts
+            filled ({(metrics.fill_ratio * 100).toFixed(1)}% of the slice).
+            Simulated book depth is insufficient for this slice size — consider
+            more slices or a smaller order.
+          </span>
+        </div>
+      )}
     </div>
   );
 }

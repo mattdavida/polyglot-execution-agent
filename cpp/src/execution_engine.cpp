@@ -102,29 +102,34 @@ void ExecutionSimulator::load_book(
 // ─────────────────────────────────────────────────────────────────────────────
 // THE HOT PATH. Every design decision here is intentional:
 //
-// ALGORITHM — Market Buy Order Sweep
-// ────────────────────────────────────
-// A market buy order "sweeps" up the ask side of the book, consuming the
-// cheapest available liquidity first. For each ask level visited:
+// ALGORITHM — Market Order Sweep (both directions)
+// ─────────────────────────────────────────────────
+// A market BUY sweeps up the ask side, consuming the cheapest offered
+// liquidity first. A market SELL (liquidation) sweeps down the bid side,
+// hitting the highest resting bids first. For each level visited:
 //
 //   fill_qty = min(shares_remaining, level.available)
-//   total_cost += fill_qty * level.price
+//   notional += fill_qty * level.price
 //   shares_remaining -= fill_qty
 //   advance to next level via intrusive next_idx
 //
 // When shares_remaining == 0, the order is fully filled.
-// If the book is exhausted (idx == SENTINEL) before that, we report a
-// partial fill — important for large orders vs. thin books.
+// If the book is exhausted (idx == SENTINEL) before that, total_filled <
+// order_size — a partial fill, surfaced explicitly in the result so callers
+// can flag it. Important for large orders vs. thin books.
 //
 // SLIPPAGE CALCULATION
 // ─────────────────────
-// arrival_price  = asks[ask_head].price  (the best ask when the order arrives)
-// avg_fill_price = total_cost / total_filled (VWAP of all fills)
-// slippage_bps   = (avg_fill_price - arrival_price) / arrival_price * 10,000
+// arrival_price  = best price on the swept side when the order arrives
+//                  (best ask for a buy, best bid for a sell)
+// avg_fill_price = notional / total_filled (VWAP of all fills)
+// slippage_bps   = adverse move vs arrival, in basis points:
+//                  buy:  (avg_fill - arrival) / arrival * 10,000
+//                  sell: (arrival - avg_fill) / arrival * 10,000
 //
-// Slippage is positive when we pay more than the arrival price — i.e., we
-// walked up the book and consumed worse levels. For small orders vs. deep
-// books, slippage is near zero. For large orders vs. thin books, it's high.
+// Slippage is positive when the fill is worse than the arrival price —
+// paying up on a buy, or receiving less on a sell. For small orders vs.
+// deep books, slippage is near zero. For large orders vs. thin books, high.
 //
 // MARKET IMPACT MODEL (intentionally simple — POC scope only)
 // ─────────────────────────────────────────────────────────────
@@ -153,47 +158,53 @@ void ExecutionSimulator::load_book(
 // the data. This is C++20's preferred alternative to raw pointer + size pairs.
 // We use it to make the "I borrow, I do not own" relationship explicit.
 [[nodiscard]] SimulationResult
-ExecutionSimulator::simulate(int order_size) const noexcept {
+ExecutionSimulator::simulate(int order_size, Side side) const noexcept {
     // Start the clock — we measure only the sweep logic, not pybind11 overhead.
     const auto t0 = Clock::now();
 
     SimulationResult result;
 
-    // Guard: if the book has no ask levels, return zeroed result immediately.
-    if (book_.num_asks == 0 || book_.ask_head == SENTINEL) {
+    // Select the side of the book to sweep:
+    //   Buy  → asks (sorted ascending:  best = cheapest offer first)
+    //   Sell → bids (sorted descending: best = highest bid first)
+    const bool is_buy    = (side == Side::Buy);
+    const int  num_levels = is_buy ? book_.num_asks : book_.num_bids;
+    const int  head       = is_buy ? book_.ask_head : book_.bid_head;
+
+    // Guard: if the swept side has no levels, return zeroed result immediately.
+    if (num_levels == 0 || head == SENTINEL) {
         result.simulation_latency_us =
             std::chrono::duration_cast<Micros>(Clock::now() - t0).count();
         return result;
     }
 
-    // ── Non-owning view over the populated ask levels ─────────────────────────
+    // ── Non-owning view over the populated levels ─────────────────────────────
     // std::span borrows the data from the pre-allocated array — zero cost.
-    // `ask_view` is not a copy; it's a (pointer, length) pair pointing into
-    // book_.asks. Accessing ask_view[i] is identical to book_.asks[i].
-    const std::span<const PriceLevel> ask_view{
-        book_.asks.data(),
-        static_cast<std::size_t>(book_.num_asks)
+    // It's not a copy; it's a (pointer, length) pair pointing into book_.
+    const std::span<const PriceLevel> view{
+        is_buy ? book_.asks.data() : book_.bids.data(),
+        static_cast<std::size_t>(num_levels)
     };
 
-    // ── Capture arrival price (best ask at time of order) ─────────────────────
+    // ── Capture arrival price (best price on the swept side) ──────────────────
     // This is the price the trader sees before the sweep begins.
     // Slippage measures how much worse the VWAP fill is vs. this reference.
-    const double arrival_price = ask_view[static_cast<std::size_t>(book_.ask_head)].price;
+    const double arrival_price = view[static_cast<std::size_t>(head)].price;
 
     // ── Walk the book — intrusive index traversal ─────────────────────────────
     int    shares_remaining = order_size;
-    double total_cost       = 0.0;
+    double notional         = 0.0;   // sum of fill_qty * price across levels
     int    total_filled     = 0;
 
-    // idx starts at ask_head (the best ask level).
+    // idx starts at head (the best level on the swept side).
     // Each iteration: fill what we can at this level, advance to next_idx.
     // Loop terminates when filled (shares_remaining == 0) or book exhausted (SENTINEL).
     //
-    // KEY INVARIANT: we never modify book_.asks here — this is a read-only sweep.
+    // KEY INVARIANT: we never modify the book here — this is a read-only sweep.
     // The "consumption" is purely simulated: we compute fill quantities but do
     // not decrement available shares. This lets simulate() be called multiple
     // times for the same book state (e.g., comparing different order sizes).
-    int idx = book_.ask_head;
+    int idx = head;
     while (idx != SENTINEL && shares_remaining > 0) {
         // idx is signed int with SENTINEL=-1. The while-condition guarantees
         // idx >= 0 here, so the cast to size_t is always safe.
@@ -204,12 +215,12 @@ ExecutionSimulator::simulate(int order_size) const noexcept {
         //   end-of-list condition unambiguous in a debugger and self-documenting
         //   in code. size_t::max() as sentinel trades one ambiguity for another.
         //   The compiler elides this cast at -O2 anyway.
-        const PriceLevel& level = ask_view[static_cast<std::size_t>(idx)];
+        const PriceLevel& level = view[static_cast<std::size_t>(idx)];
 
         // Fill as much as available at this level, limited by what remains.
         const int fill = std::min(shares_remaining, level.available);
 
-        total_cost       += static_cast<double>(fill) * level.price;
+        notional         += static_cast<double>(fill) * level.price;
         total_filled     += fill;
         shares_remaining -= fill;
 
@@ -219,22 +230,31 @@ ExecutionSimulator::simulate(int order_size) const noexcept {
     }
 
     // ── Compute output metrics ────────────────────────────────────────────────
-    if (total_filled > 0) {
-        result.avg_fill_price  = total_cost / static_cast<double>(total_filled);
+    // total_filled is always reported — callers compare it against order_size
+    // to detect partial fills (book exhausted before the order completed).
+    result.total_filled = total_filled;
 
-        // Slippage: how many basis points above arrival_price did we pay?
+    if (total_filled > 0) {
+        result.avg_fill_price = notional / static_cast<double>(total_filled);
+
+        // Adverse price move vs arrival, signed so worse-than-arrival is
+        // positive for BOTH directions:
+        //   buy:  paid above the best ask   → avg_fill - arrival
+        //   sell: received below the best bid → arrival - avg_fill
+        const double adverse = is_buy
+            ? (result.avg_fill_price - arrival_price)
+            : (arrival_price - result.avg_fill_price);
+
         // 1 bps = 0.01% = 1/10,000.  Multiply by 10,000 to get bps.
-        result.slippage_bps = (result.avg_fill_price - arrival_price)
-                              / arrival_price * 10'000.0;
+        result.slippage_bps = adverse / arrival_price * 10'000.0;
 
         // Simplified permanent impact proxy: half the measured slippage.
         result.market_impact_bps = result.slippage_bps * 0.5;
 
-        // Total dollar cost of slippage (excludes the base notional).
-        // This is the number a risk manager cares about: "how much did we
-        // overpay vs. the price we saw when the order was submitted?"
-        result.total_cost_usd = (result.avg_fill_price - arrival_price)
-                                * static_cast<double>(total_filled);
+        // Total adverse cost of slippage IN PRICE UNITS (excludes base notional).
+        // The Python boundary converts this to currency using the instrument's
+        // tick size / tick value — the C++ core stays instrument-agnostic.
+        result.total_cost = adverse * static_cast<double>(total_filled);
     }
 
     // Stop the clock — capture only the sweep arithmetic, not result packaging.
@@ -257,7 +277,8 @@ ExecutionSimulator::calculate_impact(int shares, double price) const noexcept {
     result.slippage_bps        = 1.0;
     result.market_impact_bps   = 0.5;
     result.avg_fill_price      = price * (1.0 + result.slippage_bps / 10'000.0);
-    result.total_cost_usd      = static_cast<double>(shares) * price
+    result.total_filled        = shares;
+    result.total_cost          = static_cast<double>(shares) * price
                                  * (result.slippage_bps + result.market_impact_bps) / 10'000.0;
 
     result.simulation_latency_us =
@@ -288,15 +309,24 @@ PYBIND11_MODULE(execution_engine, m) {
         .def_readwrite("avg_fill_price",        &SimulationResult::avg_fill_price)
         .def_readwrite("slippage_bps",          &SimulationResult::slippage_bps)
         .def_readwrite("market_impact_bps",     &SimulationResult::market_impact_bps)
-        .def_readwrite("total_cost_usd",        &SimulationResult::total_cost_usd)
+        .def_readwrite("total_cost",            &SimulationResult::total_cost)
+        .def_readwrite("total_filled",          &SimulationResult::total_filled)
         .def_readwrite("simulation_latency_us", &SimulationResult::simulation_latency_us)
         .def("__repr__", [](const SimulationResult& r) {
             return "SimulationResult(avg_fill=" + std::to_string(r.avg_fill_price)
                 + ", slippage=" + std::to_string(r.slippage_bps) + "bps"
                 + ", impact=" + std::to_string(r.market_impact_bps) + "bps"
-                + ", cost=$" + std::to_string(r.total_cost_usd)
+                + ", cost=" + std::to_string(r.total_cost) + " (price units)"
+                + ", filled=" + std::to_string(r.total_filled)
                 + ", latency=" + std::to_string(r.simulation_latency_us) + "us)";
         });
+
+    // ── Side ──────────────────────────────────────────────────────────────────
+    // Direction of the simulated market order. A liquidation is a SELL —
+    // it sweeps the bid side, not the asks.
+    py::enum_<Side>(m, "Side")
+        .value("BUY",  Side::Buy)
+        .value("SELL", Side::Sell);
 
     // ── ExecutionSimulator ────────────────────────────────────────────────────
     py::class_<ExecutionSimulator>(m, "ExecutionSimulator")
@@ -317,7 +347,7 @@ PYBIND11_MODULE(execution_engine, m) {
 
         // simulate: the LOB sweep hot path.
         // Python usage:
-        //   result = sim.simulate(order_size=10000)
+        //   result = sim.simulate(order_size=10000, side=execution_engine.Side.SELL)
         //
         // py::gil_scoped_release: releases Python's Global Interpreter Lock for
         // the duration of this call. simulate() operates entirely on native C++
@@ -332,8 +362,10 @@ PYBIND11_MODULE(execution_engine, m) {
         .def("simulate",
              &ExecutionSimulator::simulate,
              py::arg("order_size"),
+             py::arg("side") = Side::Buy,
              py::call_guard<py::gil_scoped_release>(),
-             "Sweep the ask side of the LOB for order_size shares. Returns SimulationResult.")
+             "Sweep the LOB for order_size shares (Side.BUY sweeps asks, "
+             "Side.SELL sweeps bids). Returns SimulationResult.")
 
         // calculate_impact: Phase 1 dummy — retained for test_phase1.py compat.
         .def("calculate_impact",

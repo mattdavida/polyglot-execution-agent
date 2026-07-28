@@ -73,6 +73,7 @@ app.add_middleware(
 class TradeRequestBody(BaseModel):
     prompt: str                   # natural language: "Liquidate 50,000 TSLA by EOD"
     instrument: str               # ticker or ISIN
+    side: Literal["buy", "sell"] = "sell"   # explicit direction — a liquidation is a sell
     total_shares: int
     deadline: str = "end of day"
 
@@ -95,12 +96,18 @@ async def health() -> dict:
 
 
 @app.post("/api/trade", status_code=202)
-async def submit_trade(body: TradeRequestBody) -> dict:
+def submit_trade(body: TradeRequestBody) -> dict:
     """
     Submit a new trade request.
 
     Starts the LangGraph: strategy_node (LLM) → simulation_node (C++) → hitl_node (pause).
     Returns immediately with thread_id when the graph pauses at the HITL interrupt.
+
+    NOTE — deliberately a sync `def`, not `async def`: graph.invoke() blocks for
+    the duration of the LLM call (seconds). FastAPI runs sync endpoints in its
+    threadpool, so the event loop stays free to serve health checks and polling
+    while a trade is being processed. An `async def` here would block the whole
+    server for every LLM round-trip.
 
     The frontend uses thread_id to:
       1. Poll GET /api/trade/{thread_id} for the paused state (strategy + metrics)
@@ -113,6 +120,7 @@ async def submit_trade(body: TradeRequestBody) -> dict:
         "trade_request": {
             "prompt":       body.prompt,
             "instrument":   body.instrument,
+            "side":         body.side,
             "total_shares": body.total_shares,
             "deadline":     body.deadline,
         },
@@ -137,13 +145,15 @@ async def submit_trade(body: TradeRequestBody) -> dict:
 
 
 @app.get("/api/trade/{thread_id}")
-async def get_trade_state(thread_id: str) -> dict:
+def get_trade_state(thread_id: str) -> dict:
     """
-    Return the current paused state for a trade.
+    Return the current state for a trade — paused, completed, or aborted.
 
     Called by the frontend to retrieve the LLM strategy and C++ metrics
     that were computed before the HITL pause. The response feeds the
     HITL Review Panel in the Next.js dashboard.
+
+    Sync `def` (threadpool) — get_state() reads SQLite synchronously.
     """
     config = {"configurable": {"thread_id": thread_id}}
     try:
@@ -155,9 +165,19 @@ async def get_trade_state(thread_id: str) -> dict:
         raise HTTPException(status_code=404, detail=f"No state for thread_id={thread_id}")
 
     state = snapshot.values
+
+    # Derive the real status from the graph, not a hardcoded string:
+    #   snapshot.next non-empty → the graph is paused at a node (the HITL interrupt)
+    #   otherwise the graph ran to END — approve→completed, abort→aborted
+    if snapshot.next:
+        status = "awaiting_approval"
+    else:
+        action = (state.get("human_feedback") or {}).get("action")
+        status = "completed" if action == "approve" else "aborted"
+
     return {
         "thread_id":        thread_id,
-        "status":           "awaiting_approval",
+        "status":           status,
         "trade_request":    state.get("trade_request"),
         "strategy":         state.get("strategy"),
         "slippage_metrics": state.get("slippage_metrics"),
@@ -167,9 +187,13 @@ async def get_trade_state(thread_id: str) -> dict:
 
 
 @app.post("/api/resume/{thread_id}")
-async def resume_trade(thread_id: str, body: ResumePayload) -> dict:
+def resume_trade(thread_id: str, body: ResumePayload) -> dict:
     """
     Resume the paused graph with the trader's decision.
+
+    Sync `def` (threadpool) — graph.invoke() blocks while the graph runs
+    (C++ re-simulation on revise, execution node on approve). Same event-loop
+    reasoning as submit_trade.
 
     Command(resume=feedback) passes `feedback` as the return value of
     interrupt() inside hitl_node. The graph then routes based on action:

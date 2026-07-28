@@ -7,6 +7,7 @@
 export interface TradeRequestBody {
   prompt:       string;   // "Liquidate 50,000 TSLA by EOD — factory delay news"
   instrument:   string;   // ticker or ISIN
+  side:         "buy" | "sell";  // explicit direction — a liquidation is a sell
   total_shares: number;
   deadline:     string;   // "end of day", "10:00 AM", etc.
 }
@@ -26,10 +27,12 @@ export interface Strategy {
 }
 
 export interface SlippageMetrics {
-  avg_fill_price:        number;
-  slippage_bps:          number;
+  avg_fill_price:        number;  // in the book's price units (raw CME ticks for ZN)
+  slippage_bps:          number;  // adverse move vs arrival price (positive = worse)
   market_impact_bps:     number;
-  total_cost_usd:        number;
+  total_cost_usd:        number;  // real USD, converted via instrument tick metadata
+  total_filled:          number;  // contracts actually filled by the simulated sweep
+  fill_ratio:            number;  // total_filled / order_size — < 1 means partial fill
   simulation_latency_us: number;
 }
 

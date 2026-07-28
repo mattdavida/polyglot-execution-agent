@@ -1,7 +1,15 @@
 # Polyglot Execution Agent — Architecture & Design Decisions
 
-> **Status:** POC complete. All phases 0–5 delivered. See [README.md](README.md) for build status and [DEMO.md](DEMO.md) for the full walkthrough.  
-> **Design Philosophy:** Complexity is intentional. The C++ rigor is the point — this architecture is built to demonstrate a hard boundary between probabilistic AI and deterministic computation.
+> **Status:** POC complete. All phases 0–5 delivered, plus a domain-correctness hardening pass (5.1). See [README.md](README.md) for build status and [DEMO.md](DEMO.md) for the full walkthrough.  
+> **Design Philosophy:** Complexity is intentional. The C++ rigor exists to make the boundary real — this architecture demonstrates a hard boundary between probabilistic AI and deterministic computation, with the engine standing in for the execution analytics a firm already runs in production.
+>
+> **Hardening pass (post-review, 2026-07-28):** the shipped system diverges from the original design below in ways that make the finance correct:
+> 1. **Side-aware sweep** — the original design only swept the ask side (a market buy), while the headline scenario was a liquidation (a sell). `simulate()` now takes a `Side` enum; sells sweep bids.
+> 2. **Units contract** — the engine returns costs in the book's raw price units; the Python boundary converts to USD via instrument tick metadata (`book_loader.price_units_to_usd`). The original `total_cost_usd` field name in C++ was a lie and is renamed `total_cost`.
+> 3. **Partial fills surfaced** — `SimulationResult.total_filled` plus a `fill_ratio` in state; the HITL panel warns when the book exhausts before a slice completes.
+> 4. **Deterministic slice sizing** — the LLM outputs algorithm + slice count only (Pydantic-bounded 1–20); `shares_per_slice` is ceil division in Python. The original design let the LLM output it, which contradicted the "LLM never computes a number" claim.
+> 5. **Non-blocking API** — graph-invoking FastAPI routes are sync `def` (threadpool) so LLM calls don't block the event loop.
+> 6. **Test suite** — `tests/` verifies the engine math (buy/sell/partial, hand-computed expectations), slicing, and unit conversion.
 >
 > **Note — this is a design log, not a living spec.** It captures original intent and key decisions made during development. Where implementation diverged from the design, divergences are noted inline with a `> Implementation divergence` callout. The current shipped state is always described in [README.md](README.md).
 
@@ -196,20 +204,23 @@ from dataclasses import dataclass
 class TradeRequest(TypedDict):
     prompt: str
     instrument: str          # integer ID at C++ boundary; string here for LLM
+    side: Literal["buy", "sell"]   # hardening pass: explicit direction, never LLM-inferred
     total_shares: int
     deadline: str
 
 class Strategy(TypedDict):
     approach: Literal["VWAP", "TWAP", "Sweep", "Iceberg"]
     num_slices: int
-    shares_per_slice: int
+    shares_per_slice: int    # hardening pass: computed in Python (ceil division), not an LLM output
     reasoning: str           # LLM natural language output
 
 class SlippageMetrics(TypedDict):
-    avg_fill_price: float
-    slippage_bps: float
+    avg_fill_price: float        # in the book's price units (raw CME ticks for ZN)
+    slippage_bps: float          # adverse vs arrival (positive = worse, both directions)
     market_impact_bps: float
-    total_cost_usd: float
+    total_cost_usd: float        # hardening pass: real USD via tick metadata conversion
+    total_filled: int            # hardening pass: partial-fill detection
+    fill_ratio: float            # hardening pass: total_filled / order_size
     simulation_latency_us: int   # microseconds — surfaced in UI for the demo
 
 class HumanFeedback(TypedDict):
