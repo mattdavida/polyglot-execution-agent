@@ -45,3 +45,13 @@ def get_simulator() -> "_engine.ExecutionSimulator":
     mutable state between concurrent requests. Thread safety via ownership.
     """
     return _engine.ExecutionSimulator()
+
+
+def get_side(side: str) -> "_engine.Side":
+    """
+    Map the API-level side string to the C++ Side enum.
+
+    "buy"  → Side.BUY  (sweeps asks)
+    "sell" → Side.SELL (sweeps bids — the liquidation path)
+    """
+    return _engine.Side.BUY if side.lower() == "buy" else _engine.Side.SELL

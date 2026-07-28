@@ -87,22 +87,25 @@ try:
     all_ok = all([
         check("avg_fill > 0",                          result_large.avg_fill_price > 0),
         check("slippage_bps >= 0",                     result_large.slippage_bps >= 0),
-        check("total_cost_usd > 0",                    result_large.total_cost_usd > 0),
+        check("total_cost > 0 (price units)",          result_large.total_cost > 0),
+        check("filled quantity reported",              result_large.total_filled > 0),
         check("small order slippage <= large order",   result_small.slippage_bps <= result_large.slippage_bps),
         check("latency captured (us)",                 result_large.simulation_latency_us >= 0),
     ])
 
     print(f"\n  Large order ({ORDER_LARGE} contracts):")
-    print(f"    avg_fill     : {result_large.avg_fill_price:.2f}")
+    print(f"    avg_fill     : {result_large.avg_fill_price:.2f} (price units)")
+    print(f"    filled       : {result_large.total_filled}")
     print(f"    slippage     : {result_large.slippage_bps:.4f} bps")
     print(f"    market_impact: {result_large.market_impact_bps:.4f} bps")
-    print(f"    total_cost   : ${result_large.total_cost_usd:.4f}")
+    print(f"    total_cost   : {result_large.total_cost:.4f} price units")
     print(f"    latency      : {result_large.simulation_latency_us} us")
 
     print(f"\n  Small order ({ORDER_SMALL} contracts):")
-    print(f"    avg_fill     : {result_small.avg_fill_price:.2f}")
+    print(f"    avg_fill     : {result_small.avg_fill_price:.2f} (price units)")
+    print(f"    filled       : {result_small.total_filled}")
     print(f"    slippage     : {result_small.slippage_bps:.4f} bps")
-    print(f"    total_cost   : ${result_small.total_cost_usd:.4f}")
+    print(f"    total_cost   : {result_small.total_cost:.4f} price units")
 
     print(f"\n  Test 2: {'PASS' if all_ok else 'FAIL'}")
 

@@ -12,13 +12,12 @@ Input state keys:  trade_request
 Output state keys: strategy, errors
 """
 
-import json
 import logging
-from pydantic import BaseModel
+import math
+from pydantic import BaseModel, Field
 from typing import Literal
 
 from backend.pipeline.state import TradeState
-from backend.tools.llm_client import get_chat_llm
 
 logger = logging.getLogger(__name__)
 
@@ -26,25 +25,37 @@ logger = logging.getLogger(__name__)
 # Using .with_structured_output(StrategyOutput) forces the LLM to return valid
 # JSON that matches this schema. No regex parsing, no json.loads — Pydantic
 # validates the response and raises if the LLM produces invalid output.
+#
+# DELIBERATE OMISSION: shares_per_slice is NOT in this schema. The LLM chooses
+# the approach and how many slices; the division (total_shares / num_slices)
+# is arithmetic, and arithmetic never comes from the LLM. It is computed
+# deterministically in _slice_size() below. The num_slices bound (1-20) is
+# enforced by Pydantic Field validation, not just by the prompt.
 class StrategyOutput(BaseModel):
     approach: Literal["VWAP", "TWAP", "Sweep", "Iceberg"]
-    num_slices: int
-    shares_per_slice: int
+    num_slices: int = Field(ge=1, le=20)
     reasoning: str   # natural language rationale — shown to the trader in the HITL panel
 
 
+def _slice_size(total_shares: int, num_slices: int) -> int:
+    """Deterministic slice sizing: ceil division so slices always cover the order."""
+    return math.ceil(total_shares / num_slices)
+
+
 # ── System prompt ──────────────────────────────────────────────────────────────
-# The CRITICAL constraint: "DO NOT calculate or estimate any numerical values".
-# This is enforced in the prompt, not in code. The LangGraph simulation_node
-# owns all numbers. This prompt is the contract between the LLM and the C++ core.
+# The CRITICAL constraint: the LLM decides approach and slice COUNT only.
+# All arithmetic (slice size, slippage, cost) is computed in code — the slice
+# size deterministically in this module, the execution metrics in the C++ core.
 _SYSTEM_PROMPT = """You are an algorithmic trading specialist at an institutional hedge fund.
 Given a trade request, select the best execution algorithm and slicing plan.
 
 Your response should be a JSON object with:
 - approach: one of "VWAP", "TWAP", "Sweep", or "Iceberg"
 - num_slices: integer number of child orders (1-20)
-- shares_per_slice: integer shares per child order
 - reasoning: 2-4 sentences of plain-English strategic rationale for the portfolio manager
+
+Do NOT calculate or estimate any numerical values beyond choosing the slice count.
+Slice sizes, slippage, and costs are computed by a deterministic engine downstream.
 
 Algorithm guide:
 - VWAP: volume-weighted average price — distributes order across the session in
@@ -75,12 +86,17 @@ def run(state: TradeState) -> dict:
     user_prompt = (
         f"Trade request: {trade.get('prompt', '')}\n"
         f"Instrument: {trade.get('instrument', 'UNKNOWN')}\n"
+        f"Side: {trade.get('side', 'sell').upper()}\n"
         f"Total shares: {trade.get('total_shares', 0):,}\n"
         f"Deadline: {trade.get('deadline', 'end of day')}\n\n"
         f"Select the execution algorithm and slicing plan for this order."
     )
 
     try:
+        # Imported lazily so this module (and its pure helpers like _slice_size)
+        # can be imported in tests/CI without Azure credentials configured.
+        from backend.tools.llm_client import get_chat_llm
+
         llm = get_chat_llm(temperature=0.2)
         # with_structured_output uses function-calling / JSON mode under the hood.
         # The LLM response is validated against StrategyOutput before returning.
@@ -90,16 +106,19 @@ def run(state: TradeState) -> dict:
             {"role": "user",   "content": user_prompt},
         ])
 
+        # Slice size is OUR arithmetic, not the LLM's — deterministic ceil division.
+        shares_per_slice = _slice_size(trade.get("total_shares", 0), result.num_slices)
+
         strategy = {
             "approach":        result.approach,
             "num_slices":      result.num_slices,
-            "shares_per_slice": result.shares_per_slice,
+            "shares_per_slice": shares_per_slice,
             "reasoning":       result.reasoning,
         }
 
         logger.info(
             f"[strategy_node] approach={result.approach} "
-            f"slices={result.num_slices}x{result.shares_per_slice:,} shares"
+            f"slices={result.num_slices}x{shares_per_slice:,} shares"
         )
         return {"strategy": strategy, "errors": errors}
 
@@ -108,11 +127,12 @@ def run(state: TradeState) -> dict:
         logger.exception(msg)
         errors.append(msg)
         # Safe fallback: VWAP with conservative slicing
+        total = trade.get("total_shares", 0)
         return {
             "strategy": {
                 "approach": "VWAP",
                 "num_slices": 5,
-                "shares_per_slice": trade.get("total_shares", 50_000) // 5,
+                "shares_per_slice": _slice_size(total, 5) if total > 0 else 0,
                 "reasoning": "[FALLBACK] LLM unavailable. Defaulted to VWAP with 5 equal slices.",
             },
             "errors": errors,

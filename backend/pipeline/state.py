@@ -10,6 +10,7 @@ from typing_extensions import TypedDict
 class TradeRequest(TypedDict):
     prompt: str
     instrument: str       # human-readable for the LLM; converted to uint32 at the C++ boundary
+    side: Literal["buy", "sell"]  # order direction — a liquidation is a sell
     total_shares: int
     deadline: str
 
@@ -17,15 +18,17 @@ class TradeRequest(TypedDict):
 class Strategy(TypedDict):
     approach: Literal["VWAP", "TWAP", "Sweep", "Iceberg"]
     num_slices: int
-    shares_per_slice: int
-    reasoning: str        # LLM natural language — the human-readable rationale
+    shares_per_slice: int  # computed deterministically in Python — never by the LLM
+    reasoning: str         # LLM natural language — the human-readable rationale
 
 
 class SlippageMetrics(TypedDict):
-    avg_fill_price: float
-    slippage_bps: float
+    avg_fill_price: float         # in the book's price units (e.g. raw CME ticks for ZN)
+    slippage_bps: float           # adverse move vs arrival price (positive = worse)
     market_impact_bps: float
-    total_cost_usd: float
+    total_cost_usd: float         # converted from price units via instrument tick metadata
+    total_filled: int             # contracts actually filled by the simulated sweep
+    fill_ratio: float             # total_filled / order_size — < 1.0 means partial fill
     simulation_latency_us: int    # microseconds — surfaced in the UI as the demo proof point
 
 

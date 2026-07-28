@@ -53,14 +53,28 @@ DEFAULT_WINDOW_MINUTES = 10            # only look back this far
 # Must match C++ MAX_LEVELS = 10
 MAX_LEVELS = 10
 
-# ZN instrument metadata for UI display
+# ZN instrument metadata — used for UI display AND for converting the C++
+# engine's price-unit outputs into real currency. In production this is the
+# firm's instrument reference data; here it is the single source of truth
+# for the units contract at the Python/C++ boundary.
 ZN_METADATA = {
     "symbol":       "ZN",
     "description":  "10-Year Treasury Note Futures (CME)",
-    "tick_size":    0.5,          # minimum price increment
+    "tick_size":    0.5,          # minimum price increment (in the book's price units)
     "tick_value":   15.625,       # USD value per tick per contract
     "price_unit":   "CME ticks",  # raw CME integer tick format
 }
+
+
+def price_units_to_usd(cost_price_units: float) -> float:
+    """
+    Convert an adverse cost expressed in the book's raw price units
+    (summed over contracts) into US dollars.
+
+    The C++ engine returns total_cost = |avg_fill - arrival| * filled, in
+    price units. Dollars = (price units / tick_size) ticks * tick_value $/tick.
+    """
+    return (cost_price_units / ZN_METADATA["tick_size"]) * ZN_METADATA["tick_value"]
 
 
 # ── Loader ────────────────────────────────────────────────────────────────────

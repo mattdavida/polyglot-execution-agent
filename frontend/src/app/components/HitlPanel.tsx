@@ -66,6 +66,13 @@ export default function HitlPanel({ tradeState, onResume, isRevising }: Props) {
             <span className="text-lg font-bold text-gray-100 font-mono">
               {trade_request.instrument}
             </span>
+            <span
+              className={`badge badge-sm font-semibold ${
+                trade_request.side === "buy" ? "badge-success" : "badge-error"
+              }`}
+            >
+              {trade_request.side?.toUpperCase() ?? "SELL"}
+            </span>
             <span className="text-sm text-gray-300 font-mono">
               {trade_request.total_shares.toLocaleString()} shares
             </span>

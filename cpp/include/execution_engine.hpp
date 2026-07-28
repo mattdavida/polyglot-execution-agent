@@ -73,6 +73,18 @@ constexpr int MAX_LEVELS = 10;
 constexpr int SENTINEL = -1;
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Side
+// ─────────────────────────────────────────────────────────────────────────────
+// Direction of the simulated market order:
+//   Buy  → sweeps the ask side (paying up through offered liquidity)
+//   Sell → sweeps the bid side (selling down through resting bids)
+// A liquidation is a Sell — it consumes bids, not asks.
+enum class Side : int {
+    Buy  = 0,
+    Sell = 1,
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // PriceLevel
 // ─────────────────────────────────────────────────────────────────────────────
 // One node in the order book — represents all resting limit orders at a single
@@ -105,8 +117,7 @@ struct PriceLevel {
 //   asks: sorted ascending  by price (best ask = lowest  price = asks[ask_head])
 //   bids: sorted descending by price (best bid = highest price = bids[bid_head])
 //
-// simulate() only reads from the ask side for now (market buy order sweep).
-// Phase 3+ can add bid-side sweeps for sell orders.
+// simulate() sweeps the ask side for Side::Buy and the bid side for Side::Sell.
 struct OrderBook {
     std::array<PriceLevel, MAX_LEVELS> asks = {};  // ask side: ascending price
     std::array<PriceLevel, MAX_LEVELS> bids = {};  // bid side: descending price
@@ -126,11 +137,16 @@ struct OrderBook {
 // Field names intentionally match SlippageMetrics TypedDict in
 // backend/pipeline/state.py so the pybind11 bridge can hand the result
 // directly to the LangGraph state without name translation.
+// UNITS: prices and total_cost are in the same *price units* as the book that
+// was loaded (e.g. raw CME ticks for the ZN dataset). The C++ core is
+// instrument-agnostic — converting price units to real currency (via tick size
+// and tick value) is the Python boundary's job, where instrument metadata lives.
 struct SimulationResult {
-    double  avg_fill_price        = 0.0;  // VWAP of fills across all consumed levels
-    double  slippage_bps          = 0.0;  // (avg_fill - arrival_price) / arrival_price * 10000
+    double  avg_fill_price        = 0.0;  // VWAP of fills across all consumed levels (price units)
+    double  slippage_bps          = 0.0;  // adverse move vs arrival price, in basis points (positive = worse)
     double  market_impact_bps     = 0.0;  // estimated permanent price impact (simple model)
-    double  total_cost_usd        = 0.0;  // dollar cost of slippage: (avg_fill - arrival) * shares
+    double  total_cost            = 0.0;  // adverse cost of slippage in price units: |avg_fill - arrival| * filled
+    int     total_filled          = 0;    // contracts/shares actually filled (< order_size = partial fill)
     int64_t simulation_latency_us = 0;    // wall-clock time of the C++ sweep, in microseconds
 };
 
@@ -162,17 +178,20 @@ public:
                    const std::vector<std::pair<double, int>>& bids);
 
     // ── simulate ──────────────────────────────────────────────────────────────
-    // Phase 2: Walk the ask side of the pre-allocated LOB, consuming liquidity
-    // level by level until the order is fully filled (or the book is exhausted).
-    // Returns a SimulationResult with VWAP fill price, slippage in bps, and the
-    // wall-clock time the sweep took in microseconds.
+    // Walk one side of the pre-allocated LOB, consuming liquidity level by
+    // level until the order is fully filled (or the book is exhausted).
+    //   Side::Buy  → sweeps asks (paying up)
+    //   Side::Sell → sweeps bids (selling down) — the liquidation path
+    // Returns a SimulationResult with VWAP fill price, adverse slippage in bps,
+    // filled quantity (for partial-fill detection), and the wall-clock time the
+    // sweep took in microseconds.
     //
     // HOT PATH CONSTRAINTS (enforced here, critical for Phase 2+):
     //   - noexcept: no exception overhead, no stack unwinding tables on the path
     //   - no heap allocation: all data is in book_ (pre-allocated member)
-    //   - std::span view: borrows the ask array slice without copying
+    //   - std::span view: borrows the array slice without copying
     //   - intrusive index walk: next_idx traversal, no pointer chasing to heap
-    [[nodiscard]] SimulationResult simulate(int order_size) const noexcept;
+    [[nodiscard]] SimulationResult simulate(int order_size, Side side = Side::Buy) const noexcept;
 
     // ── calculate_impact ──────────────────────────────────────────────────────
     // Phase 1 dummy — retained for backwards compatibility with test_phase1.py.

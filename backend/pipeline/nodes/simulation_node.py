@@ -17,14 +17,21 @@ Market data:
   from an external tick dataset via book_loader.py. Falls back to a hardcoded
   dummy book if the CSV file is not available (e.g. CI environments).
 
-Input state keys:  strategy, human_feedback (optional — only on revise path)
+Units contract (the integration boundary):
+  The C++ engine is instrument-agnostic — it returns avg_fill_price and
+  total_cost in the *price units of the loaded book* (raw CME ticks for ZN).
+  THIS node owns the conversion to real currency, using the instrument's
+  tick_size / tick_value metadata. In production this is exactly where the
+  firm's instrument reference data would plug in.
+
+Input state keys:  trade_request (side), strategy, human_feedback (optional — revise path)
 Output state keys: slippage_metrics, revision_count, human_feedback (cleared), errors
 """
 
 import logging
 from backend.pipeline.state import TradeState
-from backend.tools.cpp_bridge import get_simulator
-from backend.tools.book_loader import load_zn_book
+from backend.tools.cpp_bridge import get_simulator, get_side
+from backend.tools.book_loader import load_zn_book, price_units_to_usd
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +102,10 @@ def run(state: TradeState) -> dict:
         errors.append(f"simulation_node: invalid order_size={order_size}")
         return {"errors": errors}
 
+    # Order direction comes from the trade request — deterministic, never inferred
+    # by the LLM. A liquidation is a sell and must sweep the bid side.
+    side_str = state.get("trade_request", {}).get("side", "sell")
+
     try:
         # ── Market data ───────────────────────────────────────────────────────
         # Load the real ZN order book (parsed from tick CSV, lru_cached).
@@ -107,20 +118,40 @@ def run(state: TradeState) -> dict:
         # simulate() is the zero-allocation sweep — returns in microseconds.
         sim = get_simulator()
         sim.load_book(asks=asks, bids=bids)
-        cpp_result = sim.simulate(order_size=order_size)
+        cpp_result = sim.simulate(order_size=order_size, side=get_side(side_str))
+
+        # ── Unit conversion: price units → USD ────────────────────────────────
+        # cpp_result.total_cost is the adverse slippage cost in the book's raw
+        # price units, summed over filled contracts. The conversion via tick
+        # metadata lives in book_loader — the instrument reference data owner.
+        total_cost_usd = price_units_to_usd(cpp_result.total_cost)
+
+        fill_ratio = cpp_result.total_filled / order_size if order_size else 0.0
 
         metrics = {
             "avg_fill_price":        cpp_result.avg_fill_price,
             "slippage_bps":          cpp_result.slippage_bps,
             "market_impact_bps":     cpp_result.market_impact_bps,
-            "total_cost_usd":        cpp_result.total_cost_usd,
+            "total_cost_usd":        total_cost_usd,
+            "total_filled":          cpp_result.total_filled,
+            "fill_ratio":            fill_ratio,
             "simulation_latency_us": cpp_result.simulation_latency_us,
         }
 
+        if fill_ratio < 1.0:
+            # Book exhausted before the slice completed — the trader must see this.
+            errors.append(
+                f"simulation_node: PARTIAL FILL — only {cpp_result.total_filled:,} of "
+                f"{order_size:,} contracts filled ({fill_ratio:.1%}). "
+                f"Book depth is insufficient for this slice size."
+            )
+
         logger.info(
-            f"[simulation_node] order={order_size:,} contracts  "
+            f"[simulation_node] {side_str.upper()} order={order_size:,} contracts  "
+            f"filled={cpp_result.total_filled:,} ({fill_ratio:.1%})  "
             f"avg_fill={cpp_result.avg_fill_price:.1f}  "
             f"slippage={cpp_result.slippage_bps:.4f}bps  "
+            f"cost=${total_cost_usd:,.2f}  "
             f"latency={cpp_result.simulation_latency_us}us"
         )
 

@@ -2,6 +2,8 @@
 
 > No presenter needed. This document walks you through a full trade cycle from submission to dispatch.  
 > Run the app locally and follow along — see [README.md](README.md) for startup instructions.
+>
+> **Note:** screenshots below predate the domain-correctness hardening pass (Build Status 5.1 in the README). The live app additionally shows a Buy/Sell side selector on the form, a SELL/BUY badge and fill-ratio row in the HITL panel, and price-unit labels on the fill price. The flow is otherwise identical.
 
 ---
 
@@ -17,7 +19,7 @@ This tool enforces that boundary architecturally. The LLM decides strategy. A C+
 
 ![Trade submission dashboard — prefilled form](docs/screenshots/01-dashboard-idle.png)
 
-The dashboard opens with the trade submission form prefilled with a sensible default — ZN, 200 contracts, end-of-day deadline. There is nothing to configure before use — no sessions, no accounts, no setup steps. Select an instrument from the grouped dropdown (equities, rates futures, equity index futures, commodities, FX), set the quantity and deadline, add an optional rationale, and click **Submit Trade**.
+The dashboard opens with the trade submission form prefilled with a sensible default — ZN, sell, 200 contracts, end-of-day deadline. There is nothing to configure before use — no sessions, no accounts, no setup steps. Select an instrument from the grouped dropdown (equities, rates futures, equity index futures, commodities, FX), pick the side (Buy/Sell — explicit, never inferred from the free-text rationale), set the quantity and deadline, add an optional rationale, and click **Submit Trade**.
 
 The rationale field is forwarded verbatim to the LLM as context for strategy selection — it is where you communicate the *why* behind the trade ("macro catalyst", "rebalance before close", "risk-off on factory data"). If left blank, the system constructs a default prompt from the form values.
 
@@ -62,13 +64,13 @@ Three actions are available: **Approve**, **Modify**, or **Abort**. The graph wa
 The strategy card shows what the LLM decided:
 
 - **Algorithm** — VWAP, TWAP, Sweep, or Iceberg, selected based on the order size, deadline, and rationale
-- **Number of slices** — how many child orders to break the parent into
-- **Shares per slice** — size of each child order
+- **Number of slices** — how many child orders to break the parent into (Pydantic-bounded 1–20)
+- **Shares per slice** — size of each child order. This is *not* an LLM output: it is deterministic ceil division (`total / num_slices`) computed in Python, because arithmetic never comes from the LLM
 - **Reasoning** — plain-language explanation of why the LLM made these choices
 
 The reasoning field is not decorative. It is the LLM's self-assessment: what factors it weighted, what risks it identified, why this algorithm fits the stated constraints. An experienced trader reading it can immediately tell whether the LLM understood the situation or missed something.
 
-The LLM does not compute slippage or fill prices. It has no knowledge of the current order book. It decides strategy. That is the entire scope of its role.
+The LLM does not compute slippage, fill prices, or slice sizes. It has no knowledge of the current order book. It decides strategy — algorithm and slice count. That is the entire scope of its role.
 
 ---
 
@@ -76,17 +78,18 @@ The LLM does not compute slippage or fill prices. It has no knowledge of the cur
 
 ![Metrics card — fill price, slippage bps, latency](docs/screenshots/06-metrics-card.png)
 
-The metrics card shows what the C++ LOB engine computed by sweeping the real ZN order book with the LLM's strategy parameters:
+The metrics card shows what the C++ LOB engine computed by sweeping the real ZN order book with the strategy parameters — the bid side for a sell (liquidation), the ask side for a buy:
 
 | Metric | Description |
 |---|---|
-| Avg fill price | Volume-weighted average across all swept price levels |
-| Slippage (bps) | Basis points above the arrival price — colour-coded green / amber / red |
-| Market impact (bps) | Half-spread model estimate |
-| Total cost (USD) | Dollar cost of slippage across the full order |
+| Avg fill price (CME ticks) | Volume-weighted average across all swept price levels, in the book's raw price units |
+| Fill | Contracts actually filled and fill ratio — highlighted red if the book exhausted before the slice completed |
+| Slippage (bps) | Adverse basis points vs the arrival price (positive = worse for both directions) — colour-coded green / amber / red |
+| Market impact (bps) | Half-slippage proxy model |
+| Slippage cost (USD) | Real dollars — converted from price units via the instrument's tick size ($15.625/tick for ZN) |
 | Simulation latency | Elapsed time inside `ExecutionSimulator::simulate()` |
 
-The simulation latency is the point. Benchmarked at **p50 = 0.6 µs, p99 = 1.1 µs** across 100,000 iterations on a modern desktop (run `python benchmark_simulate.py` to reproduce). This is not a Python estimate — it is a compiled C++20 engine running in a native thread with the Python GIL released, sweeping a pre-allocated order book via an intrusive index list with zero heap allocation on the hot path.
+The simulation latency is the point. Benchmarked at **p50 ≈ 0.7 µs, p99 ≈ 1 µs** across 100,000 iterations on a modern desktop (run `python benchmark_simulate.py` to reproduce; host-dependent). This is not a Python estimate — it is a compiled C++20 engine running in a native thread with the Python GIL released, sweeping a pre-allocated order book via an intrusive index list with zero heap allocation on the hot path.
 
 Slippage is colour-coded to make the decision visible at a glance: green is low impact, amber warrants scrutiny, red means the current parameters will be expensive and the trader should consider modifying before approving.
 
@@ -143,15 +146,19 @@ The full graph state — including the LLM strategy and C++ metrics that were co
 The backend terminal shows two complete trade cycles back to back. The first ends with `action=abort` — the graph routed cleanly to the terminal node with nothing dispatched. The second ends with `action=approve` and the full `execution_node` summary block:
 
 ```
-Instrument  : ZN
-Strategy    : TWAP — 4 slices
-Avg fill    : $7001.4600
-Slippage    : 1.37 bps
-Total cost  : $48.00
-C++ latency : 0 µs
+Instrument   : ZN
+Side         : SELL
+Strategy     : TWAP — 4 slices
+Avg fill     : 6999.38 (price units)
+Fill ratio   : 100.0%
+Slippage     : 1.60 bps
+Slippage cost: $1,750.00
+C++ latency  : 0 µs
 ```
 
-The `0 µs` per-call latency is below `std::chrono::high_resolution_clock`'s resolution — the sweep finishes before the clock can register a tick. Run `python benchmark_simulate.py` for the full picture: **p50 = 0.6 µs, p99 = 1.1 µs** across 100,000 iterations. That is the production-grade claim: not a single fast run, but a consistent sub-microsecond distribution. The GIL was released, the engine ran natively, and zero heap allocation occurred on the hot path.
+(Avg fill is in the book's raw CME price units — only the slippage cost is converted to dollars, via ZN's $15.625/tick value. The screenshot above shows the pre-hardening log format.)
+
+The `0 µs` per-call latency is below `std::chrono::high_resolution_clock`'s resolution — the sweep finishes before the clock can register a tick. Run `python benchmark_simulate.py` for the full picture: **p50 ≈ 0.7 µs, p99 ≈ 1 µs** across 100,000 iterations. That is the production-grade claim: not a single fast run, but a consistent sub-microsecond distribution. The GIL was released, the engine ran natively, and zero heap allocation occurred on the hot path.
 
 The book loader line at the top confirms the real ZN data is being used: `10 bid levels, 5 ask levels — spread 0.0 ticks` (a locked market — best bid equals best ask — which is a valid condition in a reconstructed book and produces realistic near-zero spread slippage).
 
