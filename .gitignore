@@ -1,0 +1,41 @@
+# Environment
+.env
+.venv/
+
+# C++ build artifacts
+cpp/build-ninja/
+cpp/build/
+cpp/compile_commands.json
+*.pyd
+*.so
+*.dll
+
+# LangGraph checkpointer
+checkpoints.*
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Next.js
+frontend/.next/
+frontend/node_modules/
+*.tsbuildinfo
+
+# clangd index cache
+cpp/.cache/
+
+# Approved trade records (local audit only)
+output/
+
+# Market data — provenance unconfirmed, not redistributed
+data/*.csv
+
+# Misc
+.DS_Store
+
+# Local only
+todo.md
+.vscode/
